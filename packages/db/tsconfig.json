@@ -1,0 +1,18 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    // Emit CommonJS: NestJS compiles to CJS, and CJS resolves extensionless
+    // relative imports natively — which is what our Bundler-style source uses.
+    // Emitting ESM here would produce `import './foo'` with no extension, which
+    // Node's ESM loader refuses.
+    "module": "CommonJS",
+    "moduleResolution": "Node",
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "declarationMap": false
+  },
+  "include": ["src/**/*"],
+  // env.ts and migrate.ts are dev-time entry points. Excluding them keeps
+  // `dotenv` (a devDependency) out of the shipped dist/ runtime path.
+  "exclude": ["src/**/*.test.ts", "src/migrate.ts", "src/env.ts"]
+}

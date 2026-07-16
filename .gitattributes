@@ -1,0 +1,14 @@
+# Normalize to LF in the repository; check out native on Windows.
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.woff binary
+*.woff2 binary
+
+package-lock.json linguist-generated=true -diff
+packages/db/migrations/meta/*.json linguist-generated=true -diff

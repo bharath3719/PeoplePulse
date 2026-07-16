@@ -1,0 +1,27 @@
+node_modules/
+dist/
+build/
+.turbo/
+
+# Secrets. Never commit these.
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+
+# Build artifacts
+*.tsbuildinfo
+coverage/
+.vite/
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# Logs
+*.log
+npm-debug.log*

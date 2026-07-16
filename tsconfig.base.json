@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "compilerOptions": {
+    "target": "ES2023",
+    "lib": ["ES2023"],
+
+    // Bundler resolution, not NodeNext.
+    //
+    // NodeNext requires a `.js` extension on every relative import, which is
+    // technically correct for pure Node ESM but which drizzle-kit's bundler
+    // cannot resolve back to the `.ts` source. Every tool we actually run —
+    // Vite, NestJS, tsx, vitest — expects extensionless imports, so this is the
+    // resolution mode that agrees with the toolchain rather than fighting it.
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "exactOptionalPropertyTypes": true,
+
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "composite": true,
+    "incremental": true,
+
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": true,
+
+    "experimentalDecorators": true,
+    "emitDecoratorMetadata": true
+  },
+  "exclude": ["node_modules", "dist"]
+}
