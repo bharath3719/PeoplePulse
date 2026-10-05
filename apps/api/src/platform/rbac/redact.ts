@@ -38,6 +38,26 @@ export function redact<T extends Record<string, unknown>>(
   return out;
 }
 
+/**
+ * The write side of the same rule: you may not overwrite a field you are not
+ * allowed to read. Someone who cannot see a PAN has no basis for "correcting"
+ * it, and an edit form that shows them a blank box invites them to try.
+ *
+ * Returns the offending keys rather than stripping them, so the caller rejects
+ * the whole request. Silently dropping a field and answering 200 tells the
+ * caller it was saved.
+ */
+export function unwritableFields<T extends Record<string, unknown>>(
+  actor: Actor,
+  input: T,
+  policy: FieldPolicy<T>,
+): (keyof T & string)[] {
+  return (Object.keys(input) as (keyof T & string)[]).filter((key) => {
+    const required = policy[key];
+    return required !== undefined && !can(actor, required);
+  });
+}
+
 export function redactMany<T extends Record<string, unknown>>(
   actor: Actor,
   values: readonly T[],

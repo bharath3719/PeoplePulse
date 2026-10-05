@@ -8,6 +8,7 @@ import { Login } from '@/features/auth/Login';
 import { EmployeeList } from '@/features/employee/EmployeeList';
 import { EmployeeDetail } from '@/features/employee/EmployeeDetail';
 import { EmployeeNew } from '@/features/employee/EmployeeNew';
+import { EmployeeEdit } from '@/features/employee/EmployeeEdit';
 import { ImportEmployees } from '@/features/import/ImportEmployees';
 import { CompanySettings } from '@/features/org/CompanySettings';
 import { useCompanySettings } from '@/features/org/api/company';
@@ -51,6 +52,7 @@ export function App() {
           <Route path="/employees" element={<EmployeeList />} />
           <Route path="/employees/new" element={<EmployeeNew />} />
           <Route path="/employees/:id" element={<EmployeeDetail />} />
+          <Route path="/employees/:id/edit" element={<EmployeeEdit />} />
           <Route path="/import" element={<ImportEmployees />} />
           <Route path="/settings" element={<CompanySettings />} />
 

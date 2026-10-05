@@ -23,10 +23,15 @@ export interface Employee {
   locationId: string | null;
   departmentId: string | null;
   designationId: string | null;
+  gradeId: string | null;
   managerId: string | null;
   pfStatus: string;
+  hasPriorPfMembership: boolean;
   esiStatus: string;
 
+  dateOfBirth?: string | null;
+  gender?: string | null;
+  personalEmail?: string | null;
   panMasked?: string | null;
   uan?: string | null;
   esicNumber?: string | null;
@@ -57,6 +62,23 @@ export function useCreateEmployee() {
   return useMutation({
     mutationFn: (input: unknown) => api.post<Employee>('/employees', input),
     onSuccess: () => void qc.invalidateQueries({ queryKey: ['employees'] }),
+  });
+}
+
+/**
+ * Correct an employee. The body is a PATCH: absent = unchanged, null = cleared.
+ *
+ * The response is the server's view of the corrected record — including a PF
+ * status it may have re-derived — so it replaces the cached profile outright.
+ */
+export function useUpdateEmployee(id: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (patch: Record<string, unknown>) => api.patch<Employee>(`/employees/${id}`, patch),
+    onSuccess: (employee) => {
+      qc.setQueryData(['employee', id], employee);
+      void qc.invalidateQueries({ queryKey: ['employees'] });
+    },
   });
 }
 

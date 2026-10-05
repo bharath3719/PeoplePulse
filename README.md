@@ -2,7 +2,7 @@
 
 Cloud HRMS for Indian SMBs (10–200 employees). Core HR, Attendance, Leave, India-statutory Payroll, ATS, Performance, and L&D in one multi-tenant platform.
 
-**Status: Slice 1 is built and runs end to end.** Company signup → login → employee master (create, list, detail, Excel import) → org structure → company settings, on an RLS-isolated tenant. 95 tests green.
+**Status: Slice 1 is built and runs end to end.** Company signup → login → employee master (create, list, detail, edit, Excel import) → org structure → company settings, on an RLS-isolated tenant. 130 tests green.
 
 ---
 
@@ -54,7 +54,7 @@ Two rules that are not negotiable, because violating either is a compliance defe
 npm install
 cp .env.example .env          # fill in your Postgres password
 npm run db:migrate            # schema + RLS policies + the peoplepulse_app role
-npm test                      # 95 tests, incl. 13 tenant-isolation
+npm test                      # 130 tests, incl. 13 tenant-isolation + 17 employee-edit, on a real DB
 
 npm run dev:api               # :3000/api/v1
 npm run dev:web               # :5173, proxies /api to the API
@@ -86,18 +86,30 @@ Employee validation (PAN, UAN, IFSC, the create/update schemas) lives in
 and the web form, so the browser enforces exactly the rules the server does. It used to live in the
 API's DTO, where a comment claimed it was "shared with the web client"; it was not, and could not be.
 
+**Editing an employee is a *correction*, not a lifecycle event** (`PATCH /employees/:id`). It fixes
+what was entered wrong and leaves old → new in the audit log; transfers and promotions (CHR-07) will
+be their own effective-dated actions. Three rules it enforces:
+
+- **Hire-time facts** — join date, PF wage at joining, prior PF membership (a UAN implies it) — are
+  correctable only until the employee's first finalised payroll run. Correcting one re-derives
+  `pfStatus` with the same hire-time function and appends to `employee_event`. Editing anything else
+  never recomputes PF ([ADR-004](docs/decisions/ADR-004-statutory-applicability.md)'s trap).
+- **Every reference is checked in-tenant.** Postgres runs foreign-key checks *without* RLS, so a
+  `department_id` from another company passes the FK; `manager_id` has no FK at all. The service
+  asks under the tenant context, and refuses reporting loops.
+- **You cannot overwrite what you cannot read**, and bank details are a separate, MFA-gated
+  endpoint, so changing where salary goes never rides in under `employee.edit`.
+
 ### Still open in Slice 1
 
 - **MFA has no UI.** The API is complete (`/auth/mfa/verify`, enrolment, the `MFA_REQUIRED` 403) and
-  the guard is tested, but nothing in the web app prompts for a code. It does not bite yet: MFA is
-  gated by *permission*, and every Slice 1 permission is un-gated — the first MFA-gated action is
-  `payroll.*`, which is Phase 2. Build the prompt before payroll ships, not after.
+  the guard is tested, but nothing in the web app prompts for a code. MFA is gated by *permission*,
+  and the first MFA-gated route now exists: `PATCH /employees/:id/bank` (`employee.bank.edit`). That
+  is why bank details have an API and tests but no web form — nobody could submit it. Build the
+  prompt before payroll ships, not after; the bank form comes with it.
 - **The company switcher has no endpoint.** `useSwitchTenant()` and `POST /auth/switch-tenant` both
   exist, but `/auth/me` does not return the user's *other* tenants, so nothing can render the list.
   Blocks D-16 (the CA-partner channel, risk R3).
-- **An employee cannot be edited after creation.** There is no `PATCH /employees/:id` — the endpoint
-  was never written, though `updateEmployeeSchema` sits in core waiting for it. A typo'd PAN is
-  currently permanent, so this is the next thing to build.
 - **`DELETE /employees/:id` exists, but the two-tier rule is unbuilt** — hard-delete only when there
   is no payroll history, else anonymise (NFR-08 wants 8-year statutory retention). Nothing in the web
   app calls it yet.

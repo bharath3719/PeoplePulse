@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { Actor, Permission } from '@peoplepulse/core';
-import { redact, redactMany, maskTail, type FieldPolicy } from './redact';
+import { redact, redactMany, maskTail, unwritableFields, type FieldPolicy } from './redact';
 
 /**
  * Field-level redaction (ADM-01).
@@ -98,5 +98,32 @@ describe('maskTail', () => {
 
   it('does not overflow the mask when the tail is longer than the width', () => {
     expect(maskTail('123456', 4)).toBe('123456');
+  });
+});
+
+describe('unwritableFields — you may not overwrite what you may not read', () => {
+  // An edit carries only the fields being changed, so the policy is over Partial<Row>.
+  const EDIT_POLICY: FieldPolicy<Partial<Row>> = POLICY;
+
+  it('names a sensitive field the caller cannot see', () => {
+    const edit = { firstName: 'Ravi', salaryRupees: 1 };
+
+    expect(unwritableFields(actor(), edit, EDIT_POLICY)).toEqual(['salaryRupees']);
+  });
+
+  it('flags a field that is present but null — clearing is writing', () => {
+    // "I can't see it, so I'll just blank it" is still an edit to a salary.
+    expect(unwritableFields(actor(), { panMasked: null }, EDIT_POLICY)).toEqual(['panMasked']);
+  });
+
+  it('lets through a caller who holds the permission', () => {
+    const edit = { panMasked: 'XXXXXX234F', salaryRupees: 1 };
+    const both = actor('employee.identifiers.view', 'employee.salary.view');
+
+    expect(unwritableFields(both, edit, EDIT_POLICY)).toEqual([]);
+  });
+
+  it('ignores fields the policy does not mention', () => {
+    expect(unwritableFields(actor(), { firstName: 'Ravi', id: 'x' }, EDIT_POLICY)).toEqual([]);
   });
 });

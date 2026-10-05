@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { fromRupees } from '../money/paise';
 import {
-  derivePfStatusAtHire, optIntoPf, pfStatusAfterSalaryChange,
+  derivePfStatusAtHire, hasPriorPfMembership, optIntoPf, pfStatusAfterSalaryChange,
   deriveEsiStatusAtPeriodStart, shouldComputePf, shouldComputeEsi,
 } from './pf-eligibility';
 
@@ -89,6 +89,15 @@ describe('gate 2 — is this employee a member?', () => {
 
   it('refuses to opt someone in at a company with no PF scheme', () => {
     expect(() => optIntoPf('NOT_APPLICABLE')).toThrow(/not EPF-registered/i);
+  });
+
+  it('treats a UAN on file as prior membership, whatever the checkbox says', () => {
+    // HR forgot to tick "already a PF member" but typed the UAN. The UAN wins —
+    // otherwise a senior hire with a UAN is wrongly EXCLUDED (CASE 4, by accident).
+    expect(hasPriorPfMembership(false, '100200300400')).toBe(true);
+    expect(hasPriorPfMembership(true, null)).toBe(true);
+    expect(hasPriorPfMembership(false, null)).toBe(false);
+    expect(hasPriorPfMembership(false, '')).toBe(false);
   });
 });
 

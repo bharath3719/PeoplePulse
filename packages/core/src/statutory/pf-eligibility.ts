@@ -64,6 +64,18 @@ export interface EmployeePfFacts {
 }
 
 /**
+ * Was this person an EPF member before joining us?
+ *
+ * An existing UAN is strong evidence of prior membership. If HR supplies one,
+ * the employee is a member regardless of what the checkbox said — "once a
+ * member, always a member" is not something HR can toggle off by forgetting to
+ * tick a box.
+ */
+export function hasPriorPfMembership(declared: boolean, uan: string | null | undefined): boolean {
+  return declared || Boolean(uan);
+}
+
+/**
  * Decide PF status AT HIRE.
  *
  * Call this once, when the employee is created or imported. Store the result.

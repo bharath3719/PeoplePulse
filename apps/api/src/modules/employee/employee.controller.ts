@@ -1,6 +1,6 @@
 import {
-  Controller, Get, Post, Delete, Param, Query, Req, HttpCode,
-  UploadedFile, UseInterceptors, Res, BadRequestException,
+  Controller, Get, Post, Patch, Delete, Param, Query, Req, HttpCode,
+  UploadedFile, UseInterceptors, Res, BadRequestException, ParseUUIDPipe,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import type { Response } from 'express';
@@ -9,7 +9,10 @@ import { actorOrThrow } from '../../platform/rbac/permission.guard';
 import { ZodBody } from '../../platform/validation/zod.pipe';
 import { EmployeeService } from './employee.service';
 import { EmployeeImportService } from './employee-import.service';
-import { createEmployeeSchema, toEmployeeView, type CreateEmployeeInput } from './employee.dto';
+import {
+  createEmployeeSchema, updateEmployeeSchema, updateEmployeeBankSchema, toEmployeeView,
+  type CreateEmployeeInput, type UpdateEmployeeInput, type UpdateEmployeeBankInput,
+} from './employee.dto';
 import type { AuthedRequest } from '../../platform/auth/authed-request';
 
 /**
@@ -94,6 +97,36 @@ export class EmployeeController {
   ) {
     const actor = actorOrThrow(req);
     return toEmployeeView(actor, await this.employees.create(actor, input));
+  }
+
+  /**
+   * Correct an employee's details. A correction, not a transfer or promotion —
+   * see EmployeeService.update for what that distinction protects.
+   */
+  @Patch(':id')
+  @RequirePermission('employee.edit')
+  async update(
+    @Req() req: AuthedRequest,
+    @Param('id', ParseUUIDPipe) id: string,
+    @ZodBody(updateEmployeeSchema) input: UpdateEmployeeInput,
+  ) {
+    const actor = actorOrThrow(req);
+    return toEmployeeView(actor, await this.employees.update(actor, id, input));
+  }
+
+  /**
+   * Change where salary is paid. Its own route so that its own permission —
+   * which requires MFA — is the one PermissionGuard checks.
+   */
+  @Patch(':id/bank')
+  @RequirePermission('employee.bank.edit')
+  async updateBank(
+    @Req() req: AuthedRequest,
+    @Param('id', ParseUUIDPipe) id: string,
+    @ZodBody(updateEmployeeBankSchema) input: UpdateEmployeeBankInput,
+  ) {
+    const actor = actorOrThrow(req);
+    return toEmployeeView(actor, await this.employees.updateBank(actor, id, input));
   }
 
   /**

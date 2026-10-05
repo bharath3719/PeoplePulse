@@ -6,7 +6,8 @@ import {
   withTenant, type Database,
 } from '@peoplepulse/db';
 import {
-  derivePfStatusAtHire, deriveEsiStatusAtPeriodStart, fromRupees, type Actor,
+  derivePfStatusAtHire, deriveEsiStatusAtPeriodStart, hasPriorPfMembership, fromRupees,
+  type Actor,
 } from '@peoplepulse/core';
 import { DB } from '../../platform/database/database.module';
 import { AuditService } from '../../platform/audit/audit.service';
@@ -241,7 +242,7 @@ export class EmployeeImportService {
          * rules would grow — and it would be wrong in a way nobody notices until
          * 200 people have the wrong PF status.
          */
-        const hasPrior = data.hasPriorPfMembership || Boolean(data.uan);
+        const hasPrior = hasPriorPfMembership(data.hasPriorPfMembership, data.uan);
 
         return {
           tenantId: actor.tenantId,

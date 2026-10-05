@@ -14,8 +14,8 @@ import type { Database } from '@peoplepulse/db';
  */
 const NEVER_LOG = new Set([
   'passwordHash', 'mfaSecret',
-  'panEncrypted', 'bankAccountEncrypted',
-  'ctcAnnualPaise', 'basicPaise', 'grossPaise', 'netPayPaise',
+  'pan', 'panEncrypted', 'bankAccount', 'bankAccountEncrypted',
+  'ctcAnnualPaise', 'basicPaise', 'grossPaise', 'netPayPaise', 'pfJoiningWagePaise',
 ]);
 
 function scrub(value: Record<string, unknown> | undefined): Record<string, unknown> | undefined {

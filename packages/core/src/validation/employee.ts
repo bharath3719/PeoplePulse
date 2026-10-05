@@ -71,6 +71,75 @@ export const createEmployeeSchema = z.object({
 
 export type CreateEmployeeInput = z.infer<typeof createEmployeeSchema>;
 
-export const updateEmployeeSchema = createEmployeeSchema.partial().omit({ empCode: true });
+// The update schemas below reuse each field's rule from the create schema, so a
+// PAN is validated by exactly one regex whichever endpoint it arrives through.
+const fields = createEmployeeSchema.shape;
+
+/** Optional on create; on update, `null` means "clear it" and absent means "leave it". */
+function clearable<T extends z.ZodTypeAny>(field: z.ZodOptional<T>) {
+  return field.unwrap().nullable();
+}
+
+/**
+ * A CORRECTION to an employee's record — PATCH /employees/:id.
+ *
+ * An absent key leaves the field alone; `null` clears it. That distinction is
+ * why this is not `createEmployeeSchema.partial()`: a partial create schema has
+ * no way to say "remove their work email", and it still carries the create
+ * DEFAULTS — so every edit would silently send `hasPriorPfMembership: false`,
+ * and PF status would be re-derived from a fact nobody touched.
+ *
+ * Deliberately NOT editable here:
+ *   - empCode: the key other records and re-imports match on (OPEN.md D-19).
+ *   - bank details: their own endpoint, behind `employee.bank.edit`, which
+ *     requires MFA. Redirecting someone's salary is the classic payroll fraud.
+ *   - grossMonthlyRupees: never stored. ESI coverage is re-established at the
+ *     start of each contribution period (ADR-004), not corrected after the fact.
+ *   - status: confirmation and exit are lifecycle events (CHR-07), not edits.
+ *
+ * Strict, so a client that sends `bankAccount` here gets a 400 rather than a
+ * 200 that quietly ignored the one field it cared about.
+ */
+export const updateEmployeeSchema = z.object({
+  firstName: fields.firstName,
+  lastName: clearable(fields.lastName),
+  dateOfBirth: clearable(fields.dateOfBirth),
+  gender: clearable(fields.gender),
+  personalEmail: clearable(fields.personalEmail),
+  workEmail: clearable(fields.workEmail),
+  phone: clearable(fields.phone),
+
+  joinDate: fields.joinDate,
+  employmentType: fields.employmentType.removeDefault(),
+
+  locationId: clearable(fields.locationId),
+  departmentId: clearable(fields.departmentId),
+  designationId: clearable(fields.designationId),
+  gradeId: clearable(fields.gradeId),
+  managerId: clearable(fields.managerId),
+
+  pan: clearable(fields.pan),
+  uan: clearable(fields.uan),
+  esicNumber: clearable(fields.esicNumber),
+
+  // Hire-time PF facts (ADR-004). Correctable only until the employee's first
+  // finalised payroll run; the API re-derives pfStatus from them when they change.
+  pfWageAtJoiningRupees: clearable(fields.pfWageAtJoiningRupees),
+  hasPriorPfMembership: fields.hasPriorPfMembership.removeDefault(),
+}).partial().strict();
 
 export type UpdateEmployeeInput = z.infer<typeof updateEmployeeSchema>;
+
+/**
+ * Where salary is paid — PATCH /employees/:id/bank.
+ *
+ * Account and IFSC travel together. Changing one without the other is how a
+ * NEFT file ends up with an account number at the wrong bank.
+ */
+export const updateEmployeeBankSchema = z.object({
+  bankAccount: fields.bankAccount.unwrap(),
+  bankIfsc: fields.bankIfsc.unwrap(),
+  bankName: clearable(fields.bankName).optional(),
+}).strict();
+
+export type UpdateEmployeeBankInput = z.infer<typeof updateEmployeeBankSchema>;

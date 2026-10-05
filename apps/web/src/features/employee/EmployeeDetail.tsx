@@ -1,6 +1,6 @@
 import { useState } from 'react';
-import { useParams, Link } from 'react-router-dom';
-import { ArrowLeft, Eye } from 'lucide-react';
+import { useParams, useNavigate, Link } from 'react-router-dom';
+import { ArrowLeft, Eye, Pencil } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { PfStatusBadge, EsiStatusBadge } from '@/components/ui/pf-status-badge';
@@ -9,6 +9,7 @@ import { useEmployee, useRevealIdentifiers } from './api/employees';
 
 export function EmployeeDetail() {
   const { id = '' } = useParams();
+  const navigate = useNavigate();
   const { data: employee, isLoading } = useEmployee(id);
 
   /**
@@ -38,9 +39,14 @@ export function EmployeeDetail() {
           </h1>
           <p className="tabular text-sm text-muted-foreground">{employee.empCode}</p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex items-center gap-2">
           <PfStatusBadge status={employee.pfStatus} />
           <EsiStatusBadge status={employee.esiStatus} />
+          <Can I="employee.edit">
+            <Button variant="outline" size="sm" onClick={() => navigate(`/employees/${id}/edit`)}>
+              <Pencil className="h-4 w-4" /> Edit
+            </Button>
+          </Can>
         </div>
       </div>
 

@@ -17,20 +17,32 @@ export class ZodValidationPipe implements PipeTransform {
       return this.schema.parse(value);
     } catch (error) {
       if (error instanceof ZodError) {
-        // RFC 7807-shaped (TR-40). Field-level, so the UI can attach each
-        // message to the input that caused it.
-        throw new BadRequestException({
-          type: 'https://peoplepulse.in/errors/validation',
-          title: 'Validation failed',
-          errors: error.errors.map((e) => ({
-            field: e.path.join('.'),
-            message: e.message,
-          })),
-        });
+        throw validationFailed(error.errors.map((e) => ({
+          field: e.path.join('.'),
+          message: e.message,
+        })));
       }
       throw error;
     }
   }
+}
+
+export interface FieldError {
+  field: string;
+  message: string;
+}
+
+/**
+ * RFC 7807-shaped (TR-40). Field-level, so the UI can attach each message to the
+ * input that caused it. Also thrown by services, for the rules a schema cannot
+ * check — "that department belongs to another company".
+ */
+export function validationFailed(errors: FieldError[]): BadRequestException {
+  return new BadRequestException({
+    type: 'https://peoplepulse.in/errors/validation',
+    title: 'Validation failed',
+    errors,
+  });
 }
 
 /** @ZodBody(schema) — validated and typed in one annotation. */
