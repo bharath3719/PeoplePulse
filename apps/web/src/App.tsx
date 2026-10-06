@@ -1,17 +1,19 @@
 import { NavLink, Navigate, Route, Routes, useLocation } from 'react-router-dom';
-import { Building2, LogOut, Upload, Users } from 'lucide-react';
+import { Building2, LogOut, Upload, UserCog, Users } from 'lucide-react';
 import { tokenStore } from '@/lib/api';
 import { cn } from '@/lib/utils';
 import { useSession } from '@/features/auth/api/auth';
 import { Can, PermissionProvider } from '@/features/auth/permissions';
 import { CompanySwitcher } from '@/features/auth/CompanySwitcher';
 import { Login } from '@/features/auth/Login';
+import { AcceptInvitation } from '@/features/auth/AcceptInvitation';
 import { EmployeeList } from '@/features/employee/EmployeeList';
 import { EmployeeDetail } from '@/features/employee/EmployeeDetail';
 import { EmployeeNew } from '@/features/employee/EmployeeNew';
 import { EmployeeEdit } from '@/features/employee/EmployeeEdit';
 import { ImportEmployees } from '@/features/import/ImportEmployees';
 import { CompanySettings } from '@/features/org/CompanySettings';
+import { UserAccess } from '@/features/users/UserAccess';
 
 /**
  * The app shell and the routing table.
@@ -22,6 +24,17 @@ import { CompanySettings } from '@/features/org/CompanySettings';
  * role changes; see the header comment in features/auth/permissions.tsx.
  */
 export function App() {
+  return (
+    <Routes>
+      {/* Outside the sign-in gate: whoever accepts may or may not be signed in
+          already — the CA firm's accountant usually is, to another company. */}
+      <Route path="/invite" element={<AcceptInvitation />} />
+      <Route path="*" element={<Gate />} />
+    </Routes>
+  );
+}
+
+function Gate() {
   const location = useLocation();
   const hasToken = Boolean(tokenStore.get());
   const session = useSession();
@@ -55,6 +68,7 @@ export function App() {
           <Route path="/employees/:id/edit" element={<EmployeeEdit />} />
           <Route path="/import" element={<ImportEmployees />} />
           <Route path="/settings" element={<CompanySettings />} />
+          <Route path="/users" element={<UserAccess />} />
 
           {/* Already signed in — the login form has nothing to offer. */}
           <Route path="/login" element={<Navigate to="/employees" replace />} />
@@ -89,6 +103,9 @@ function Shell({ children }: { children: React.ReactNode }) {
             </Can>
             <Can I="tenant.settings">
               <NavItem to="/settings" icon={Building2}>Company</NavItem>
+            </Can>
+            <Can I="user.invite">
+              <NavItem to="/users" icon={UserCog}>Users</NavItem>
             </Can>
           </nav>
 

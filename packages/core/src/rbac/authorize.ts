@@ -36,6 +36,18 @@ export function canAny(actor: Actor, permissions: readonly Permission[]): boolea
   return permissions.some((p) => actor.permissions.has(p));
 }
 
+/**
+ * May this actor hand out a role carrying these permissions? Only if they hold
+ * every one of them already.
+ *
+ * Without this bound, `user.invite` is a quiet route to everything: an HR Admin
+ * who cannot see salaries invites a second address of their own as Payroll
+ * Admin, accepts, and now can. Granting is bounded by holding.
+ */
+export function canGrant(actor: Actor, permissions: readonly Permission[]): boolean {
+  return canAll(actor, permissions);
+}
+
 export class ForbiddenError extends Error {
   constructor(readonly permission: Permission) {
     // Deliberately vague to the caller. A 403 that says WHICH permission is

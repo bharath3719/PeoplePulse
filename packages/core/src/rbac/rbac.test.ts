@@ -6,7 +6,7 @@ import {
 } from './permissions';
 import { SYSTEM_ROLES, requiresMfa } from './roles';
 import {
-  can, canAll, canAny, requirePermission, resolveScope, SCOPES,
+  can, canAll, canAny, canGrant, requirePermission, resolveScope, SCOPES,
   ForbiddenError, type Actor,
 } from './authorize';
 
@@ -90,6 +90,31 @@ describe('authorization', () => {
     expect(canAll(actor, ['leave.apply', 'leave.view.own'])).toBe(true);
     expect(canAll(actor, ['leave.apply', 'payroll.view'])).toBe(false);
     expect(canAny(actor, ['payroll.view', 'leave.apply'])).toBe(true);
+  });
+
+  it('never widens a scope a role cannot enter', () => {
+    // `employee.view.all` widens `employee.view`, which gates the endpoints.
+    // The Accountant role shipped holding the first without the second, and
+    // landed on a 403 that the People page rendered as "No employees yet".
+    for (const role of SYSTEM_ROLES) {
+      if (role.permissions.includes(SCOPES.employee.all)) {
+        expect(role.permissions, role.key).toContain(SCOPES.employee.own);
+      }
+    }
+  });
+
+  it('lets an actor grant only what they already hold', () => {
+    // An HR Admin who cannot see pay must not be able to invite a second login
+    // of their own as Payroll Admin, and see it that way.
+    const hr = SYSTEM_ROLES.find((r) => r.key === 'HR_ADMIN')!;
+    const payroll = SYSTEM_ROLES.find((r) => r.key === 'PAYROLL_ADMIN')!;
+    const manager = SYSTEM_ROLES.find((r) => r.key === 'MANAGER')!;
+    const actor = actorWith(...hr.permissions);
+
+    expect(canGrant(actor, manager.permissions)).toBe(true);
+    expect(canGrant(actor, hr.permissions)).toBe(true);
+    expect(canGrant(actor, payroll.permissions)).toBe(false);
+    expect(canGrant(actor, [...manager.permissions, 'employee.salary.view'])).toBe(false);
   });
 
   it('throws Forbidden without naming the missing permission', () => {

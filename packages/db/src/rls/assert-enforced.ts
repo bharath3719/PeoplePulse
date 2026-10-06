@@ -28,7 +28,7 @@ export class RlsNotEnforcedError extends Error {
  * (BRD risk R4).
  */
 export const TENANT_OWNED_TABLES = [
-  'role', 'role_permission', 'user_role',
+  'role', 'role_permission', 'user_role', 'user_invitation',
   'location', 'department', 'designation', 'grade',
   'employee', 'employee_event', 'audit_log',
 ] as const;

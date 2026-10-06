@@ -61,7 +61,7 @@ async function assertRlsIsOn(db: ReturnType<typeof drizzle>): Promise<void> {
     where n.nspname = 'public'
       and c.relkind = 'r'
       and c.relname in (
-        'role','role_permission','user_role',
+        'role','role_permission','user_role','user_invitation',
         'location','department','designation','grade',
         'employee','employee_event','audit_log'
       )

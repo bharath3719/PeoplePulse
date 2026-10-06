@@ -1,6 +1,7 @@
 import {
-  pgTable, uuid, text, boolean, timestamp, primaryKey, index, unique,
+  pgTable, uuid, text, boolean, timestamp, primaryKey, index, unique, uniqueIndex,
 } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
 import { tenant } from './tenant';
 
 /**
@@ -118,7 +119,54 @@ export const userRole = pgTable('user_role', {
   index('user_role_tenant_idx').on(t.tenantId),
 ]);
 
+/**
+ * An invitation to join a company (D-16): how an accountant, or anyone after the
+ * founder, gets a login there. Signup is the only other way in, and it makes a
+ * new company.
+ *
+ * Tenant-owned and under RLS, unlike `user_tenant`. Accepting happens before the
+ * invitee has any tenant context, which would ordinarily push this table outside
+ * RLS the way login pushes `user_tenant` out. Instead the token CARRIES its
+ * tenant — `<tenant id>.<secret>` — and acceptance sets that tenant's context
+ * before looking the secret up. A secret presented with the wrong tenant id
+ * finds nothing.
+ *
+ * Only a SHA-256 of the secret is stored. The link is a bearer credential for a
+ * login holding whatever roles it names, so a read of this table must not be
+ * enough to use one.
+ */
+export const userInvitation = pgTable('user_invitation', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  tenantId: uuid('tenant_id').notNull().references(() => tenant.id, { onDelete: 'cascade' }),
+
+  /** Lower-cased. Accepting attaches exactly this address, never one the invitee types. */
+  email: text('email').notNull(),
+
+  /**
+   * Granted on acceptance. Not a FK — Postgres cannot reference array elements —
+   * so acceptance re-reads them in-tenant, and a role deleted since is dropped.
+   */
+  roleIds: uuid('role_ids').array().notNull(),
+
+  tokenHash: text('token_hash').notNull().unique(),
+  invitedByUserId: uuid('invited_by_user_id').notNull(),
+
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  acceptedAt: timestamp('accepted_at', { withTimezone: true }),
+  acceptedByUserId: uuid('accepted_by_user_id'),
+  revokedAt: timestamp('revoked_at', { withTimezone: true }),
+
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  index('user_invitation_tenant_idx').on(t.tenantId),
+  // One live invitation per address per company. Inviting again revokes the
+  // old one first, so an earlier link cannot outlive the roles it promised.
+  uniqueIndex('user_invitation_live_uq').on(t.tenantId, t.email)
+    .where(sql`accepted_at is null and revoked_at is null`),
+]);
+
 export type User = typeof user.$inferSelect;
 export type NewUser = typeof user.$inferInsert;
 export type Role = typeof role.$inferSelect;
 export type UserTenant = typeof userTenant.$inferSelect;
+export type UserInvitation = typeof userInvitation.$inferSelect;

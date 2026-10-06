@@ -61,3 +61,29 @@ export function useSwitchTenant() {
     onError: () => void qc.invalidateQueries({ queryKey: ['session'] }),
   });
 }
+
+export interface InvitationPreview {
+  email: string;
+  companyName: string;
+  roles: string[];
+  hasAccount: boolean;
+  expiresAt: string;
+}
+
+/** What an invitation link is for. POSTed, so the token never sits in a URL the server logs. */
+export function useInvitationPreview(token: string) {
+  return useQuery({
+    queryKey: ['invitation', token],
+    queryFn: () => api.post<InvitationPreview>('/auth/invitations/preview', { token }),
+    enabled: Boolean(token),
+    retry: false,
+  });
+}
+
+export function useAcceptInvitation() {
+  return useMutation({
+    mutationFn: (input: { token: string; password: string }) =>
+      api.post<LoginResult>('/auth/invitations/accept', input),
+    onSuccess: (result) => tokenStore.set(result.accessToken),
+  });
+}

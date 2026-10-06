@@ -101,6 +101,9 @@ const PAYROLL_ADMIN_PERMISSIONS: readonly Permission[] = [
  * active; RLS still sees exactly one tenant per request.
  */
 const ACCOUNTANT_PERMISSIONS: readonly Permission[] = [
+  // `employee.view` is what every employee endpoint is gated on; `.view.all`
+  // only widens its scope. Without it this role could not open the list at all.
+  'employee.view',
   'employee.view.all',
   'employee.identifiers.view',
   'employee.salary.view',

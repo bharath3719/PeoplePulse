@@ -18,6 +18,8 @@ import { EmployeeImportService } from './modules/employee/employee-import.servic
 import { EmployeeController } from './modules/employee/employee.controller';
 import { OrgService } from './modules/org/org.service';
 import { OrgController } from './modules/org/org.controller';
+import { UserService } from './modules/user/user.service';
+import { UserController } from './modules/user/user.controller';
 
 @Module({
   imports: [
@@ -25,10 +27,10 @@ import { OrgController } from './modules/org/org.controller';
     JwtModule.register({}),
     DatabaseModule,
   ],
-  controllers: [AuthController, TenantController, EmployeeController, OrgController],
+  controllers: [AuthController, TenantController, EmployeeController, OrgController, UserController],
   providers: [
     AuthService, AuditService, PiiService,
-    TenantService, EmployeeService, EmployeeImportService, OrgService,
+    TenantService, EmployeeService, EmployeeImportService, OrgService, UserService,
 
     /**
      * Both guards are GLOBAL, and the order matters.

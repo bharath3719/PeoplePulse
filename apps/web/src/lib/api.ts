@@ -43,8 +43,12 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     },
   });
 
-  if (response.status === 401) {
-    // The token is gone or stale. Anything else we do here is a guess.
+  if (response.status === 401 && token) {
+    // The token we sent is gone or stale. Anything else we do here is a guess.
+    //
+    // Only when one was sent: a 401 without a token is an answer, not an
+    // expiry — "Invalid credentials" from the login form. Treating it as an
+    // expiry reloaded /login and wiped the message before anyone could read it.
     tokenStore.clear();
     window.location.href = '/login';
     throw new ApiError(401, 'Session expired');

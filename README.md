@@ -2,7 +2,7 @@
 
 Cloud HRMS for Indian SMBs (10–200 employees). Core HR, Attendance, Leave, India-statutory Payroll, ATS, Performance, and L&D in one multi-tenant platform.
 
-**Status: Slice 1 is built and runs end to end.** Company signup → login → company switcher → employee master (create, list, detail, edit, Excel import) → org structure → company settings, on an RLS-isolated tenant. 135 tests green.
+**Status: Slice 1 is built and runs end to end.** Company signup → login → inviting users → company switcher → employee master (create, list, detail, edit, Excel import) → org structure → company settings, on an RLS-isolated tenant. 156 tests green.
 
 ---
 
@@ -54,7 +54,7 @@ Two rules that are not negotiable, because violating either is a compliance defe
 npm install
 cp .env.example .env          # fill in your Postgres password
 npm run db:migrate            # schema + RLS policies + the peoplepulse_app role
-npm test                      # 135 tests, incl. 13 tenant-isolation + 17 employee-edit + 5 switcher, on a real DB
+npm test                      # 156 tests, incl. 13 tenant-isolation + 17 employee-edit + 5 switcher + 15 invitation, on a real DB
 
 npm run dev:api               # :3000/api/v1
 npm run dev:web               # :5173, proxies /api to the API
@@ -103,19 +103,40 @@ be their own effective-dated actions. Three rules it enforces:
 **One login can serve several companies** ([D-16](docs/decisions/OPEN.md)): the CA firm's
 accountant. `/auth/me` lists every active membership, and the header becomes a company switcher
 when there is more than one. Switching re-issues the token; the API re-checks membership each time
-and refuses with a 403, not a 401 — the web client reads any 401 as an expired session, so a
-revoked company would otherwise sign you out of the one you are in.
+and refuses with a 403, not a 401 — the web client reads a 401 on an authenticated request as an
+expired session, so a revoked company would otherwise sign you out of the one you are in.
+
+**Getting someone in is an invitation** (Users, `user.invite`). The inviter picks roles and gets a
+one-time link, valid for 7 days, for one address. Accepting creates a login, or — for an address
+that already has one — attaches it to the company after checking *that login's* password. Three
+rules:
+
+- **You can grant only what you hold.** A role is offered, and accepted by the API, only if the
+  inviter holds every permission in it (`canGrant`). Otherwise `user.invite` would be a quiet route
+  to everything: an HR Admin who cannot see pay invites a second address of their own as Payroll
+  Admin.
+- **The token carries its tenant** (`<tenant id>.<secret>`), so `user_invitation` stays under RLS
+  even though accepting happens before the invitee has a tenant context. Only a SHA-256 of the
+  secret is stored, and the link puts it in the URL fragment, which never reaches a server log.
+- **One accept per link.** The invitation row is locked for the length of the accept, so a second
+  accept waits, then sees the link used.
 
 ### Still open in Slice 1
 
-- **MFA has no UI.** The API is complete (`/auth/mfa/verify`, enrolment, the `MFA_REQUIRED` 403) and
-  the guard is tested, but nothing in the web app prompts for a code. MFA is gated by *permission*,
+- **MFA cannot be enrolled.** `/auth/mfa/verify` and the `MFA_REQUIRED` 403 exist and the guard is
+  tested, but there is no enrolment endpoint — nothing ever writes `user.mfa_secret` — and nothing
+  in the web app prompts for a code. MFA is gated by *permission*,
   and the first MFA-gated route now exists: `PATCH /employees/:id/bank` (`employee.bank.edit`). That
   is why bank details have an API and tests but no web form — nobody could submit it. Build the
   prompt before payroll ships, not after; the bank form comes with it.
-- **Nothing can add a user to a second company.** The switcher works, but signup is the only code
-  that creates a membership, and it refuses an email that already has an account. Inviting a user —
-  an accountant above all — is what completes D-16 (the CA-partner channel, risk R3).
+- **Invitations are not emailed.** The inviter copies the link and sends it. So the link does not
+  prove the invitee owns the address: for a *new* address, whoever holds it chooses the password.
+  (It cannot take over an existing login — that needs the login's password.) Email delivery closes
+  this without changing the accept flow.
+- **Nobody can be removed.** That is `user.manage`, which requires MFA, which cannot be enrolled.
+  When it is built, note that `resolveActor` does not check `user_tenant.is_active` — it loads
+  permissions from `user_role` — so deactivating a membership alone leaves the current access
+  token working until it expires. Removal must also delete the roles, or the check must move.
 - **`DELETE /employees/:id` exists, but the two-tier rule is unbuilt** — hard-delete only when there
   is no payroll history, else anonymise (NFR-08 wants 8-year statutory retention). Nothing in the web
   app calls it yet.

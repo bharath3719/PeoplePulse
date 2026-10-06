@@ -64,6 +64,7 @@ DECLARE
     'role',
     'role_permission',
     'user_role',
+    'user_invitation',
     'location',
     'department',
     'designation',

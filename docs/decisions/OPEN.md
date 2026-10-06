@@ -164,6 +164,8 @@ The JWT carries the **active** `tenant_id`; switching company re-issues the toke
 
 **Most employees will still have exactly one `user_tenant` row.** The join table costs them nothing.
 
+**Built (6-Oct-2026):** the company switcher, and invitations — the only way a second company reaches a login. An inviter grants only roles whose permissions they hold. Invitations are not yet emailed; the inviter sends the link.
+
 ### ~~D-17 — Timezone and financial-year conventions~~ ✅ **RESOLVED**
 
 **Rulings (Product Lead):**

@@ -8,6 +8,13 @@
       "when": 1783962303181,
       "tag": "0000_whole_ghost_rider",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1791290373712,
+      "tag": "0001_acoustic_rocket_raccoon",
+      "breakpoints": true
     }
   ]
 }

@@ -4,8 +4,10 @@ import { actorOrThrow } from '../../platform/rbac/permission.guard';
 import { ZodBody } from '../../platform/validation/zod.pipe';
 import { AuthService } from '../../platform/auth/auth.service';
 import { TenantService } from '../tenant/tenant.service';
+import { UserService } from '../user/user.service';
 import {
   loginSchema, signupSchema, switchTenantSchema, mfaVerifySchema,
+  invitationTokenSchema, acceptInvitationSchema,
   type LoginInput, type SignupInput,
 } from './auth.dto';
 import type { AuthedRequest } from '../../platform/auth/authed-request';
@@ -15,6 +17,7 @@ export class AuthController {
   constructor(
     private readonly auth: AuthService,
     private readonly tenants: TenantService,
+    private readonly users: UserService,
   ) {}
 
   /** Self-serve company signup (TR-02, NFR-09). */
@@ -25,6 +28,28 @@ export class AuthController {
     // Log them straight in — a signup that then asks you to log in is friction
     // in the first 30 seconds of a 30-minute onboarding target.
     return this.auth.login(input.adminEmail, input.adminPassword, tenantId);
+  }
+
+  /**
+   * What an invitation link is for, before the invitee commits to anything.
+   *
+   * POST rather than GET /invitations/:token: a token in a path ends up in
+   * access logs and proxy logs, and it is a credential until it is used.
+   */
+  @Post('invitations/preview')
+  @Public()
+  @HttpCode(200)
+  previewInvitation(@ZodBody(invitationTokenSchema) input: { token: string }) {
+    return this.users.previewInvitation(input.token);
+  }
+
+  /** Accept, and land signed in to the company that invited you. */
+  @Post('invitations/accept')
+  @Public()
+  @HttpCode(200)
+  async acceptInvitation(@ZodBody(acceptInvitationSchema) input: { token: string; password: string }) {
+    const { email, tenantId } = await this.users.acceptInvitation(input.token, input.password);
+    return this.auth.login(email, input.password, tenantId);
   }
 
   @Post('login')
