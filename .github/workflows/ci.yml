@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    # A real Postgres, because the tests that matter most run against one: the
+    # tenant-isolation suite and the employee-edit suite. They FAIL without a
+    # database rather than skip (see packages/db/src/env.ts) — so if this service
+    # ever goes missing, CI goes red instead of quietly green.
+    #
+    # 16 is the production target (TRD). Credentials are throwaway: the container
+    # lives for one job and is reachable only from it.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: peoplepulse_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    # Two roles, same as every other environment (ADR-006). Migrations connect as
+    # the owner; the tests connect as peoplepulse_app, which the migration
+    # creates with APP_DB_PASSWORD. Point TEST_DATABASE_URL at `postgres` and
+    # every isolation test would pass while proving nothing — superusers bypass
+    # RLS — which is why assertRlsEnforced() runs before any assertion.
+    #
+    # SKIP_DB_TESTS is deliberately never set here.
+    env:
+      TEST_MIGRATION_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/peoplepulse_test
+      TEST_DATABASE_URL: postgresql://peoplepulse_app:ci-app-password@localhost:5432/peoplepulse_test
+      APP_DB_PASSWORD: ci-app-password
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      # Before the tests, not after: the API imports @peoplepulse/core and
+      # @peoplepulse/db from their dist/ builds, so on a clean checkout nothing
+      # resolves until they exist. Workspaces build in declaration order —
+      # packages/* before apps/* — and the API and web builds typecheck as they go.
+      - run: npm run build
+
+      - run: npm test
