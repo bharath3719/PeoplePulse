@@ -2,7 +2,7 @@
 
 Cloud HRMS for Indian SMBs (10–200 employees). Core HR, Attendance, Leave, India-statutory Payroll, ATS, Performance, and L&D in one multi-tenant platform.
 
-**Status: Slice 1 is built and runs end to end.** Company signup → login → employee master (create, list, detail, edit, Excel import) → org structure → company settings, on an RLS-isolated tenant. 130 tests green.
+**Status: Slice 1 is built and runs end to end.** Company signup → login → company switcher → employee master (create, list, detail, edit, Excel import) → org structure → company settings, on an RLS-isolated tenant. 135 tests green.
 
 ---
 
@@ -54,7 +54,7 @@ Two rules that are not negotiable, because violating either is a compliance defe
 npm install
 cp .env.example .env          # fill in your Postgres password
 npm run db:migrate            # schema + RLS policies + the peoplepulse_app role
-npm test                      # 130 tests, incl. 13 tenant-isolation + 17 employee-edit, on a real DB
+npm test                      # 135 tests, incl. 13 tenant-isolation + 17 employee-edit + 5 switcher, on a real DB
 
 npm run dev:api               # :3000/api/v1
 npm run dev:web               # :5173, proxies /api to the API
@@ -100,6 +100,12 @@ be their own effective-dated actions. Three rules it enforces:
 - **You cannot overwrite what you cannot read**, and bank details are a separate, MFA-gated
   endpoint, so changing where salary goes never rides in under `employee.edit`.
 
+**One login can serve several companies** ([D-16](docs/decisions/OPEN.md)): the CA firm's
+accountant. `/auth/me` lists every active membership, and the header becomes a company switcher
+when there is more than one. Switching re-issues the token; the API re-checks membership each time
+and refuses with a 403, not a 401 — the web client reads any 401 as an expired session, so a
+revoked company would otherwise sign you out of the one you are in.
+
 ### Still open in Slice 1
 
 - **MFA has no UI.** The API is complete (`/auth/mfa/verify`, enrolment, the `MFA_REQUIRED` 403) and
@@ -107,9 +113,9 @@ be their own effective-dated actions. Three rules it enforces:
   and the first MFA-gated route now exists: `PATCH /employees/:id/bank` (`employee.bank.edit`). That
   is why bank details have an API and tests but no web form — nobody could submit it. Build the
   prompt before payroll ships, not after; the bank form comes with it.
-- **The company switcher has no endpoint.** `useSwitchTenant()` and `POST /auth/switch-tenant` both
-  exist, but `/auth/me` does not return the user's *other* tenants, so nothing can render the list.
-  Blocks D-16 (the CA-partner channel, risk R3).
+- **Nothing can add a user to a second company.** The switcher works, but signup is the only code
+  that creates a membership, and it refuses an email that already has an account. Inviting a user —
+  an accountant above all — is what completes D-16 (the CA-partner channel, risk R3).
 - **`DELETE /employees/:id` exists, but the two-tier rule is unbuilt** — hard-delete only when there
   is no payroll history, else anonymise (NFR-08 wants 8-year statutory retention). Nothing in the web
   app calls it yet.

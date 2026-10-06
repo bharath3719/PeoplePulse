@@ -1,8 +1,6 @@
-import { useMutation, useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, tokenStore } from '@/lib/api';
-import type { Session } from '../permissions';
-
-export interface TenantOption { id: string; name: string; slug: string }
+import type { Session, TenantOption } from '../permissions';
 
 export interface LoginResult {
   accessToken: string;
@@ -48,11 +46,18 @@ export function useSession() {
 
 /** Switch company (D-16) — for a CA firm's accountant serving several clients. */
 export function useSwitchTenant() {
+  const qc = useQueryClient();
   return useMutation({
     mutationFn: (tenantId: string) => api.post<LoginResult>('/auth/switch-tenant', { tenantId }),
     onSuccess: (result) => {
       tokenStore.set(result.accessToken);
-      window.location.reload(); // everything on screen belongs to the old company
+      // A hard navigation to the root, not a reload. Everything cached belongs to
+      // the old company, and the current URL may name one of its records
+      // (/employees/:id), which the new company would answer with a 404.
+      window.location.assign('/');
     },
+    // Refused: access was revoked since the list was fetched. Refetch it so the
+    // company that refused drops out of the switcher.
+    onError: () => void qc.invalidateQueries({ queryKey: ['session'] }),
   });
 }

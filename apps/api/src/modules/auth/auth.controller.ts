@@ -61,10 +61,15 @@ export class AuthController {
     return this.auth.switchTenant(actorOrThrow(req).userId, input.tenantId);
   }
 
-  /** Who am I, where am I, and what may I do? The web app boots from this. */
+  /**
+   * Who am I, where am I, and what may I do? The web app boots from this.
+   *
+   * `tenants` is every company the user may switch to (D-16), so the switcher
+   * can render on any page load, not only straight after login.
+   */
   @Get('me')
   @SkipMfa()
-  me(@Req() req: AuthedRequest) {
+  async me(@Req() req: AuthedRequest) {
     const actor = actorOrThrow(req);
     return {
       userId: actor.userId,
@@ -72,6 +77,7 @@ export class AuthController {
       employeeId: actor.employeeId,
       mfaVerified: actor.mfaVerified,
       permissions: [...actor.permissions],
+      tenants: await this.auth.listTenants(actor.userId),
     };
   }
 }

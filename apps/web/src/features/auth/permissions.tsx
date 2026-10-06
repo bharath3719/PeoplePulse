@@ -24,12 +24,16 @@ import type { Permission } from '@peoplepulse/core';
  * Never let a check in this file be the only thing between a user and an action.
  */
 
+export interface TenantOption { id: string; name: string; slug: string }
+
 export interface Session {
   userId: string;
   tenantId: string;
   employeeId: string | null;
   mfaVerified: boolean;
   permissions: Permission[];
+  /** Every company this user may switch to. More than one only for external accountants (D-16). */
+  tenants: TenantOption[];
 }
 
 interface PermissionContextValue {

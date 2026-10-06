@@ -14,7 +14,9 @@ export default defineConfig({
     },
   },
   server: {
-    port: 5173,
+    // PORT for when 5173 is taken. Nothing depends on the exact port: the
+    // browser only ever talks to this server, which proxies /api.
+    port: Number(process.env['PORT']) || 5173,
     proxy: { '/api': { target: 'http://localhost:3000', changeOrigin: true } },
   },
 });

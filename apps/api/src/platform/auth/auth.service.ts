@@ -1,9 +1,9 @@
 import {
-  Injectable, UnauthorizedException, BadRequestException, Inject,
+  Injectable, UnauthorizedException, BadRequestException, ForbiddenException, Inject,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, asc } from 'drizzle-orm';
 import * as argon2 from 'argon2';
 import { authenticator } from 'otplib';
 import {
@@ -71,15 +71,7 @@ export class AuthService {
 
       if (!found || !ok || !found.isActive) throw new UnauthorizedException('Invalid credentials');
 
-      const memberships = await db.select({
-        tenantId: userTenant.tenantId,
-        employeeId: userTenant.employeeId,
-        name: tenant.name,
-        slug: tenant.slug,
-      })
-        .from(userTenant)
-        .innerJoin(tenant, eq(tenant.id, userTenant.tenantId))
-        .where(and(eq(userTenant.userId, found.id), eq(userTenant.isActive, true)));
+      const memberships = await activeMemberships(db, found.id);
 
       if (memberships.length === 0) {
         throw new UnauthorizedException('This account is not attached to any company');
@@ -112,10 +104,20 @@ export class AuthService {
         mfaRequired: mfaNeeded && !found.mfaEnabledAt
           ? true   // must enrol
           : mfaNeeded,
-        activeTenant: { id: active.tenantId, name: active.name, slug: active.slug },
-        tenants: memberships.map((m) => ({ id: m.tenantId, name: m.name, slug: m.slug })),
+        activeTenant: toOption(active),
+        tenants: memberships.map(toOption),
       };
     });
+  }
+
+  /**
+   * Every company this user may switch to — what the company switcher lists.
+   * Served from /auth/me rather than remembered from login, so a membership
+   * granted or revoked since then shows up on the next page load.
+   */
+  async listTenants(userId: string): Promise<TenantOption[]> {
+    return withoutTenantIsolation(this.db, 'company switcher: lists every company the user belongs to', async (db) =>
+      (await activeMemberships(db, userId)).map(toOption));
   }
 
   /**
@@ -126,18 +128,12 @@ export class AuthService {
    */
   async switchTenant(userId: string, toTenantId: string): Promise<LoginResult> {
     return withoutTenantIsolation(this.db, 'tenant switch: crosses tenants by definition', async (db) => {
-      const memberships = await db.select({
-        tenantId: userTenant.tenantId,
-        employeeId: userTenant.employeeId,
-        name: tenant.name,
-        slug: tenant.slug,
-      })
-        .from(userTenant)
-        .innerJoin(tenant, eq(tenant.id, userTenant.tenantId))
-        .where(and(eq(userTenant.userId, userId), eq(userTenant.isActive, true)));
+      const memberships = await activeMemberships(db, userId);
 
+      // 403, not 401. The caller is still signed in to the company they are in;
+      // the web client treats any 401 as an expired session and signs them out.
       const target = memberships.find((m) => m.tenantId === toTenantId);
-      if (!target) throw new UnauthorizedException('You do not have access to that company');
+      if (!target) throw new ForbiddenException('You do not have access to that company');
 
       const permissions = await this.loadPermissions(userId, toTenantId);
       const mfaNeeded = requiresMfa([...permissions]);
@@ -147,8 +143,8 @@ export class AuthService {
           sub: userId, tid: target.tenantId, eid: target.employeeId, mfa: !mfaNeeded,
         }),
         mfaRequired: mfaNeeded,
-        activeTenant: { id: target.tenantId, name: target.name, slug: target.slug },
-        tenants: memberships.map((m) => ({ id: m.tenantId, name: m.name, slug: m.slug })),
+        activeTenant: toOption(target),
+        tenants: memberships.map(toOption),
       };
     });
   }
@@ -227,6 +223,30 @@ export class AuthService {
       }),
     };
   }
+}
+
+/**
+ * The companies a user belongs to, active memberships only. `user_tenant` sits
+ * outside RLS, so callers hold a withoutTenantIsolation handle.
+ *
+ * Ordered by name: the switcher lists them that way, and login with no tenant
+ * named lands on the first, which must not depend on heap order.
+ */
+function activeMemberships(db: Database, userId: string) {
+  return db.select({
+    tenantId: userTenant.tenantId,
+    employeeId: userTenant.employeeId,
+    name: tenant.name,
+    slug: tenant.slug,
+  })
+    .from(userTenant)
+    .innerJoin(tenant, eq(tenant.id, userTenant.tenantId))
+    .where(and(eq(userTenant.userId, userId), eq(userTenant.isActive, true)))
+    .orderBy(asc(tenant.name), asc(tenant.id));
+}
+
+function toOption(m: { tenantId: string; name: string; slug: string }): TenantOption {
+  return { id: m.tenantId, name: m.name, slug: m.slug };
 }
 
 /**

@@ -4,6 +4,7 @@ import { tokenStore } from '@/lib/api';
 import { cn } from '@/lib/utils';
 import { useSession } from '@/features/auth/api/auth';
 import { Can, PermissionProvider } from '@/features/auth/permissions';
+import { CompanySwitcher } from '@/features/auth/CompanySwitcher';
 import { Login } from '@/features/auth/Login';
 import { EmployeeList } from '@/features/employee/EmployeeList';
 import { EmployeeDetail } from '@/features/employee/EmployeeDetail';
@@ -11,7 +12,6 @@ import { EmployeeNew } from '@/features/employee/EmployeeNew';
 import { EmployeeEdit } from '@/features/employee/EmployeeEdit';
 import { ImportEmployees } from '@/features/import/ImportEmployees';
 import { CompanySettings } from '@/features/org/CompanySettings';
-import { useCompanySettings } from '@/features/org/api/company';
 
 /**
  * The app shell and the routing table.
@@ -67,8 +67,6 @@ export function App() {
 }
 
 function Shell({ children }: { children: React.ReactNode }) {
-  const company = useCompanySettings();
-
   function signOut() {
     tokenStore.clear();
     // A hard navigation, not a router push: it drops the TanStack Query cache,
@@ -95,11 +93,7 @@ function Shell({ children }: { children: React.ReactNode }) {
           </nav>
 
           <div className="ml-auto flex items-center gap-4">
-            {company.data && (
-              <span className="hidden text-sm text-muted-foreground sm:inline">
-                {company.data.name}
-              </span>
-            )}
+            <CompanySwitcher />
             <button
               type="button"
               onClick={signOut}
