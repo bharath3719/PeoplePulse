@@ -2,7 +2,7 @@
 
 Cloud HRMS for Indian SMBs (10–200 employees). Core HR, Attendance, Leave, India-statutory Payroll, ATS, Performance, and L&D in one multi-tenant platform.
 
-**Status: Slice 1 is built and runs end to end.** Company signup → login → inviting users → company switcher → employee master (create, list, detail, edit, Excel import) → org structure → company settings, on an RLS-isolated tenant. 156 tests green.
+**Status: Slice 1 is built and runs end to end.** Company signup → login → two-factor authentication → inviting users → company switcher → employee master (create, list, detail, edit, bank details, Excel import) → org structure → company settings, on an RLS-isolated tenant. 173 tests green.
 
 ---
 
@@ -54,7 +54,7 @@ Two rules that are not negotiable, because violating either is a compliance defe
 npm install
 cp .env.example .env          # fill in your Postgres password
 npm run db:migrate            # schema + RLS policies + the peoplepulse_app role
-npm test                      # 156 tests, incl. 13 tenant-isolation + 17 employee-edit + 5 switcher + 15 invitation, on a real DB
+npm test                      # 173 tests, incl. 13 tenant-isolation + 17 employee-edit + 5 switcher + 15 invitation + 14 MFA, on a real DB
 
 npm run dev:api               # :3000/api/v1
 npm run dev:web               # :5173, proxies /api to the API
@@ -121,20 +121,37 @@ rules:
 - **One accept per link.** The invitation row is locked for the length of the accept, so a second
   accept waits, then sees the link used.
 
+**Two-factor authentication is gated by what you can do** (NFR-04), not by role name: holding any
+of `MFA_REQUIRED_PERMISSIONS` (bank edit, salary edit, payroll approve/finalize, role and user
+management) means those routes refuse a token without a verified code. Setup is an authenticator
+app (TOTP): scan a QR code, confirm with the first code. It is asked for at sign-in once set up, and
+offered in place — on the bank-details page, say — when it is not. Four rules:
+
+- **The token's `mfa` claim means a code was verified on it, never "none was needed".** It used to
+  be `!requiresMfa(permissions)`, so someone granted `employee.bank.edit` mid-session carried a
+  token that already vouched for a code they had never entered. A verified code does carry across a
+  company switch: it proved the person holds their phone, whichever company they are looking at.
+- **A password alone cannot replace the authenticator.** Enrolment runs on a half-authenticated
+  token (that is all an unenrolled user can hold), so it is refused once MFA is on — otherwise a
+  stolen password could swap in the thief's phone. The secret is encrypted at rest, and counts only
+  once a code from it has been confirmed.
+- **A code works once.** The last accepted time step is stored, and a code at or before it is
+  refused (RFC 6238 §5.2) — a code read over a shoulder cannot be replayed within its minute.
+- **Five wrong codes lock verification for 15 minutes**, and the lock is audited. Attempts are
+  counted under a row lock: without it, a burst of parallel guesses all read "0 attempts" and all
+  get a try — the test proves this by failing when the lock is removed.
+
 ### Still open in Slice 1
 
-- **MFA cannot be enrolled.** `/auth/mfa/verify` and the `MFA_REQUIRED` 403 exist and the guard is
-  tested, but there is no enrolment endpoint — nothing ever writes `user.mfa_secret` — and nothing
-  in the web app prompts for a code. MFA is gated by *permission*,
-  and the first MFA-gated route now exists: `PATCH /employees/:id/bank` (`employee.bank.edit`). That
-  is why bank details have an API and tests but no web form — nobody could submit it. Build the
-  prompt before payroll ships, not after; the bank form comes with it.
+- **A lost authenticator cannot be reset.** There are no recovery codes, and resetting another
+  user's MFA belongs with `user.manage` — unbuilt (below). Until one of them exists, a Payroll Admin
+  who loses their phone needs someone with database access to clear `mfa_enabled_at`.
 - **Invitations are not emailed.** The inviter copies the link and sends it. So the link does not
   prove the invitee owns the address: for a *new* address, whoever holds it chooses the password.
   (It cannot take over an existing login — that needs the login's password.) Email delivery closes
   this without changing the accept flow.
-- **Nobody can be removed.** That is `user.manage`, which requires MFA, which cannot be enrolled.
-  When it is built, note that `resolveActor` does not check `user_tenant.is_active` — it loads
+- **Nobody can be removed.** That is `user.manage`, which requires MFA — buildable now that MFA can
+  be set up, but not built. When it is, note that `resolveActor` does not check `user_tenant.is_active` — it loads
   permissions from `user_role` — so deactivating a membership alone leaves the current access
   token working until it expires. Removal must also delete the roles, or the check must move.
 - **`DELETE /employees/:id` exists, but the two-tier rule is unbuilt** — hard-delete only when there

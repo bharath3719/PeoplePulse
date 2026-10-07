@@ -1,5 +1,5 @@
 import {
-  pgTable, uuid, text, boolean, timestamp, primaryKey, index, unique, uniqueIndex,
+  pgTable, uuid, text, boolean, timestamp, bigint, integer, primaryKey, index, unique, uniqueIndex,
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 import { tenant } from './tenant';
@@ -23,9 +23,30 @@ export const user = pgTable('user', {
   /** Argon2id (TR-50). Never bcrypt, never a fast hash. */
   passwordHash: text('password_hash').notNull(),
 
-  /** TOTP shared secret, encrypted at rest. Null until MFA is enrolled. */
+  /**
+   * TOTP shared secret, encrypted at rest (PiiService). Set when enrolment
+   * starts; it counts only once `mfaEnabledAt` is set, which happens when the
+   * user proves their authenticator produces matching codes. A secret without
+   * that timestamp is a half-finished enrolment, and verifies nothing.
+   */
   mfaSecret: text('mfa_secret'),
   mfaEnabledAt: timestamp('mfa_enabled_at', { withTimezone: true }),
+
+  /**
+   * The TOTP time step (unix seconds / 30) of the last code accepted. A code is
+   * good for its whole 30-second window and the one either side; without this,
+   * a code read over someone's shoulder can be replayed in that minute
+   * (RFC 6238 §5.2). A code at or before this step is refused.
+   */
+  mfaLastUsedStep: bigint('mfa_last_used_step', { mode: 'number' }),
+
+  /**
+   * Wrong codes since the last right one. Six digits is a million guesses, and
+   * three of them are valid at any moment; unthrottled, that falls in about an
+   * hour. Locks verification for a while once it reaches the limit.
+   */
+  mfaFailedAttempts: integer('mfa_failed_attempts').notNull().default(0),
+  mfaLockedUntil: timestamp('mfa_locked_until', { withTimezone: true }),
 
   isActive: boolean('is_active').notNull().default(true),
   lastLoginAt: timestamp('last_login_at', { withTimezone: true }),

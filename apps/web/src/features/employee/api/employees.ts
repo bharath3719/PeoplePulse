@@ -1,4 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import type { UpdateEmployeeBankInput } from '@peoplepulse/core';
 import { api } from '@/lib/api';
 
 /**
@@ -75,6 +76,21 @@ export function useUpdateEmployee(id: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (patch: Record<string, unknown>) => api.patch<Employee>(`/employees/${id}`, patch),
+    onSuccess: (employee) => {
+      qc.setQueryData(['employee', id], employee);
+      void qc.invalidateQueries({ queryKey: ['employees'] });
+    },
+  });
+}
+
+/**
+ * Change where salary is paid. Its own endpoint, gated on `employee.bank.edit`
+ * — which needs an MFA-verified session.
+ */
+export function useUpdateEmployeeBank(id: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: UpdateEmployeeBankInput) => api.patch<Employee>(`/employees/${id}/bank`, input),
     onSuccess: (employee) => {
       qc.setQueryData(['employee', id], employee);
       void qc.invalidateQueries({ queryKey: ['employees'] });

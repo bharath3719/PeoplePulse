@@ -6,8 +6,54 @@ export interface LoginResult {
   accessToken: string;
   refreshToken: string;
   mfaRequired: boolean;
+  mfaEnrolled: boolean;
   activeTenant: TenantOption;
   tenants: TenantOption[];
+}
+
+interface Tokens {
+  accessToken: string;
+  refreshToken: string;
+}
+
+export interface MfaEnrolment {
+  secret: string;
+  otpauthUri: string;
+  /** A data: URL — rendered, never fetched. */
+  qrCode: string;
+}
+
+/**
+ * Both MFA steps end the same way: a new token that carries the verified second
+ * factor replaces the old one, and the session is re-read so everything gated
+ * on `mfaVerified` sees it.
+ */
+function useMfaTokenSwap<TInput>(mutationFn: (input: TInput) => Promise<Tokens>) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn,
+    onSuccess: async (result) => {
+      tokenStore.set(result.accessToken);
+      await qc.invalidateQueries({ queryKey: ['session'] });
+    },
+  });
+}
+
+/** A code from the authenticator app, for an MFA-verified token. */
+export function useVerifyMfa() {
+  return useMfaTokenSwap((code: string) => api.post<Tokens>('/auth/mfa/verify', { code }));
+}
+
+/** Mint a secret to scan. Each call replaces the last unconfirmed one. */
+export function useStartMfaEnrolment() {
+  return useMutation({
+    mutationFn: () => api.post<MfaEnrolment>('/auth/mfa/enrol'),
+  });
+}
+
+/** The first code from the newly-scanned app switches MFA on. */
+export function useConfirmMfaEnrolment() {
+  return useMfaTokenSwap((code: string) => api.post<Tokens>('/auth/mfa/enrol/confirm', { code }));
 }
 
 export function useLogin() {

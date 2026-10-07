@@ -15,6 +15,13 @@
       "when": 1791290373712,
       "tag": "0001_acoustic_rocket_raccoon",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1791316169631,
+      "tag": "0002_gifted_mariko_yashida",
+      "breakpoints": true
     }
   ]
 }

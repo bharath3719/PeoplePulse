@@ -16,7 +16,6 @@ export const signupSchema = z.object({
 });
 
 export const switchTenantSchema = z.object({ tenantId: z.string().uuid() });
-export const mfaVerifySchema = z.object({ code: z.string().regex(/^\d{6}$/) });
 
 /** The secret from an invitation link: `<tenant id>.<secret>`, opaque to the client. */
 export const invitationTokenSchema = z.object({ token: z.string().min(1).max(200) });

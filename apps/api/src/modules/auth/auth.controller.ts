@@ -5,8 +5,9 @@ import { ZodBody } from '../../platform/validation/zod.pipe';
 import { AuthService } from '../../platform/auth/auth.service';
 import { TenantService } from '../tenant/tenant.service';
 import { UserService } from '../user/user.service';
+import { mfaCodeSchema, type MfaCodeInput } from '@peoplepulse/core';
 import {
-  loginSchema, signupSchema, switchTenantSchema, mfaVerifySchema,
+  loginSchema, signupSchema, switchTenantSchema,
   invitationTokenSchema, acceptInvitationSchema,
   type LoginInput, type SignupInput,
 } from './auth.dto';
@@ -67,9 +68,30 @@ export class AuthController {
   @Post('mfa/verify')
   @SkipMfa()
   @HttpCode(200)
-  verifyMfa(@Req() req: AuthedRequest, @ZodBody(mfaVerifySchema) input: { code: string }) {
-    const actor = actorOrThrow(req);
-    return this.auth.verifyMfa(actor.userId, actor.tenantId, input.code);
+  verifyMfa(@Req() req: AuthedRequest, @ZodBody(mfaCodeSchema) input: MfaCodeInput) {
+    return this.auth.verifyMfa(actorOrThrow(req), input.code);
+  }
+
+  /**
+   * Set up an authenticator app. Two steps, because a secret the user's phone
+   * never received must not switch MFA on: this one returns the secret (once —
+   * it is not readable afterwards), and `confirm` switches MFA on when the
+   * phone produces a matching code.
+   *
+   * POST, not GET: it mints a new secret every time, and a GET must not.
+   */
+  @Post('mfa/enrol')
+  @SkipMfa()
+  @HttpCode(200)
+  startMfaEnrolment(@Req() req: AuthedRequest) {
+    return this.auth.startMfaEnrolment(actorOrThrow(req));
+  }
+
+  @Post('mfa/enrol/confirm')
+  @SkipMfa()
+  @HttpCode(200)
+  confirmMfaEnrolment(@Req() req: AuthedRequest, @ZodBody(mfaCodeSchema) input: MfaCodeInput) {
+    return this.auth.confirmMfaEnrolment(actorOrThrow(req), input.code);
   }
 
   /**
@@ -83,14 +105,17 @@ export class AuthController {
   @SkipMfa()
   @HttpCode(200)
   switchTenant(@Req() req: AuthedRequest, @ZodBody(switchTenantSchema) input: { tenantId: string }) {
-    return this.auth.switchTenant(actorOrThrow(req).userId, input.tenantId);
+    const actor = actorOrThrow(req);
+    return this.auth.switchTenant(actor.userId, input.tenantId, actor.mfaVerified);
   }
 
   /**
    * Who am I, where am I, and what may I do? The web app boots from this.
    *
    * `tenants` is every company the user may switch to (D-16), so the switcher
-   * can render on any page load, not only straight after login.
+   * can render on any page load, not only straight after login. The MFA fields
+   * tell it whether to ask for a code before an MFA-gated action, or to offer
+   * enrolment first.
    */
   @Get('me')
   @SkipMfa()
@@ -101,6 +126,7 @@ export class AuthController {
       tenantId: actor.tenantId,
       employeeId: actor.employeeId,
       mfaVerified: actor.mfaVerified,
+      ...(await this.auth.mfaStatus(actor)),
       permissions: [...actor.permissions],
       tenants: await this.auth.listTenants(actor.userId),
     };

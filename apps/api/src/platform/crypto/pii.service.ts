@@ -3,7 +3,9 @@ import { ConfigService } from '@nestjs/config';
 import { createCipheriv, createDecipheriv, randomBytes, createHash } from 'node:crypto';
 
 /**
- * Column-level encryption for PAN and bank account numbers (TR-52).
+ * Column-level encryption for PAN and bank account numbers (TR-52) — and for
+ * the TOTP secret behind MFA, which is a credential that never expires: anyone
+ * who reads it can generate a user's codes forever.
  *
  * AES-256-GCM: authenticated, so a tampered ciphertext fails to decrypt rather
  * than silently producing garbage that we might then write to a bank file.

@@ -30,7 +30,12 @@ export interface Session {
   userId: string;
   tenantId: string;
   employeeId: string | null;
+  /** This token carries a verified second factor. */
   mfaVerified: boolean;
+  /** Something this user may do here needs one — so ask before it, or offer setup. */
+  mfaRequired: boolean;
+  /** An authenticator is set up, so a code can be asked for. */
+  mfaEnrolled: boolean;
   permissions: Permission[];
   /** Every company this user may switch to. More than one only for external accountants (D-16). */
   tenants: TenantOption[];

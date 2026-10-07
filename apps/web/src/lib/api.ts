@@ -25,6 +25,8 @@ export class ApiError extends Error {
     readonly status: number,
     message: string,
     readonly fieldErrors: FieldError[] = [],
+    /** Machine-readable reason, where the API gives one — e.g. `MFA_REQUIRED`. */
+    readonly code?: string,
   ) {
     super(message);
     this.name = 'ApiError';
@@ -63,8 +65,9 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 
     throw new ApiError(
       response.status,
-      body.message ?? body.title ?? 'Something went wrong',
+      body.message ?? body.detail ?? body.title ?? 'Something went wrong',
       fieldErrors,
+      typeof body.code === 'string' ? body.code : undefined,
     );
   }
 

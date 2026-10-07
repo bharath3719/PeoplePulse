@@ -1,16 +1,18 @@
-import { NavLink, Navigate, Route, Routes, useLocation } from 'react-router-dom';
-import { Building2, LogOut, Upload, UserCog, Users } from 'lucide-react';
+import { Link, NavLink, Navigate, Route, Routes, useLocation } from 'react-router-dom';
+import { Building2, LogOut, ShieldCheck, Upload, UserCog, Users } from 'lucide-react';
 import { tokenStore } from '@/lib/api';
 import { cn } from '@/lib/utils';
 import { useSession } from '@/features/auth/api/auth';
-import { Can, PermissionProvider } from '@/features/auth/permissions';
+import { Can, PermissionProvider, usePermissions } from '@/features/auth/permissions';
 import { CompanySwitcher } from '@/features/auth/CompanySwitcher';
 import { Login } from '@/features/auth/Login';
 import { AcceptInvitation } from '@/features/auth/AcceptInvitation';
+import { Security } from '@/features/auth/Security';
 import { EmployeeList } from '@/features/employee/EmployeeList';
 import { EmployeeDetail } from '@/features/employee/EmployeeDetail';
 import { EmployeeNew } from '@/features/employee/EmployeeNew';
 import { EmployeeEdit } from '@/features/employee/EmployeeEdit';
+import { EmployeeBank } from '@/features/employee/EmployeeBank';
 import { ImportEmployees } from '@/features/import/ImportEmployees';
 import { CompanySettings } from '@/features/org/CompanySettings';
 import { UserAccess } from '@/features/users/UserAccess';
@@ -66,9 +68,11 @@ function Gate() {
           <Route path="/employees/new" element={<EmployeeNew />} />
           <Route path="/employees/:id" element={<EmployeeDetail />} />
           <Route path="/employees/:id/edit" element={<EmployeeEdit />} />
+          <Route path="/employees/:id/bank" element={<EmployeeBank />} />
           <Route path="/import" element={<ImportEmployees />} />
           <Route path="/settings" element={<CompanySettings />} />
           <Route path="/users" element={<UserAccess />} />
+          <Route path="/security" element={<Security />} />
 
           {/* Already signed in — the login form has nothing to offer. */}
           <Route path="/login" element={<Navigate to="/employees" replace />} />
@@ -111,6 +115,13 @@ function Shell({ children }: { children: React.ReactNode }) {
 
           <div className="ml-auto flex items-center gap-4">
             <CompanySwitcher />
+            <NavLink
+              to="/security"
+              className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"
+            >
+              <ShieldCheck className="h-4 w-4" />
+              Security
+            </NavLink>
             <button
               type="button"
               onClick={signOut}
@@ -123,7 +134,30 @@ function Shell({ children }: { children: React.ReactNode }) {
         </div>
       </header>
 
+      <MfaSetupNudge />
+
       <main className="mx-auto max-w-6xl p-4 py-8">{children}</main>
+    </div>
+  );
+}
+
+/**
+ * For someone whose access needs a second factor and who has none yet. Not a
+ * wall — the API refuses only the gated actions, and those offer setup in place
+ * — but a reminder to do it now, at a desk, rather than mid-payroll.
+ */
+function MfaSetupNudge() {
+  const { session } = usePermissions();
+  const { pathname } = useLocation();
+  if (!session?.mfaRequired || session.mfaEnrolled || pathname === '/security') return null;
+
+  return (
+    <div className="border-b bg-muted">
+      <div className="mx-auto flex max-w-6xl items-center gap-2 px-4 py-2 text-sm">
+        <ShieldCheck className="h-4 w-4 shrink-0" />
+        <span>Some of what you can do here needs two-factor authentication.</span>
+        <Link to="/security" className="font-medium text-primary hover:underline">Set it up</Link>
+      </div>
     </div>
   );
 }

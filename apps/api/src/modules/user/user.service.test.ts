@@ -13,6 +13,7 @@ import {
 import { SYSTEM_ROLES, ALL_PERMISSIONS, type Actor, type Permission } from '@peoplepulse/core';
 import { AuditService } from '../../platform/audit/audit.service';
 import { AuthService } from '../../platform/auth/auth.service';
+import { PiiService } from '../../platform/crypto/pii.service';
 import type { JwtPayload } from '../../platform/auth/authed-request';
 import { TenantService } from '../tenant/tenant.service';
 import { UserService } from './user.service';
@@ -43,6 +44,7 @@ const describeIfDb = OPTED_OUT ? describe.skip : describe;
 const SECRETS: Record<string, string> = {
   JWT_ACCESS_SECRET: 'test-only-access-secret',
   JWT_REFRESH_SECRET: 'test-only-refresh-secret',
+  PII_ENCRYPTION_KEY: 'test-only-pii-key',
 };
 const config = {
   getOrThrow: (key: string) => SECRETS[key],
@@ -121,7 +123,7 @@ beforeAll(async () => {
   await assertRlsEnforced(db);
 
   jwt = new JwtService();
-  auth = new AuthService(db, jwt, config);
+  auth = new AuthService(db, jwt, config, new PiiService(config), new AuditService(db));
   service = new UserService(db, new AuditService(db));
 
   const a = await signUp('Acme Textiles', email('acme-owner'));
