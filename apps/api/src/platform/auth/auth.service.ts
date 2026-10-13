@@ -1,3 +1,4 @@
+import { createHash, randomBytes } from 'node:crypto';
 import {
   Injectable, UnauthorizedException, BadRequestException, ForbiddenException, ConflictException,
   HttpException, HttpStatus, Inject,
@@ -10,11 +11,13 @@ import { authenticator } from 'otplib';
 import * as QRCode from 'qrcode';
 import {
   user, userTenant, userRole, role, rolePermission, tenant,
-  withoutTenantIsolation, withTenant, type Database, type TenantDatabase,
+  withoutTenantIsolation, withTenant, type Database, type TenantDatabase, type User, type NewUser,
 } from '@peoplepulse/db';
-import { isPermission, requiresMfa, type Actor, type Permission } from '@peoplepulse/core';
+import {
+  isPermission, normaliseRecoveryCode, requiresMfa, type Actor, type Permission,
+} from '@peoplepulse/core';
 import { DB } from '../database/database.module';
-import { AuditService } from '../audit/audit.service';
+import { AuditService, type AuditEntry } from '../audit/audit.service';
 import { PiiService } from '../crypto/pii.service';
 import { validationFailed } from '../validation/zod.pipe';
 import type { JwtPayload } from './authed-request';
@@ -35,6 +38,13 @@ export interface MfaStatus {
   mfaRequired: boolean;
   /** They have an authenticator set up, so a code can be asked for. */
   mfaEnrolled: boolean;
+  /** Unused recovery codes. Zero for someone who set up before codes existed. */
+  recoveryCodesLeft: number;
+}
+
+/** Shown once, when issued: only their hashes are kept. */
+export interface RecoveryCodes {
+  recoveryCodes: string[];
 }
 
 export interface LoginResult extends Tokens, MfaStatus {
@@ -53,6 +63,12 @@ export interface MfaEnrolment {
 
 /** Shown in the authenticator app beside the code. */
 const MFA_ISSUER = 'PeoplePulse';
+
+/**
+ * Recovery codes issued per set. Each is 80 random bits, written as 16 base32
+ * characters in groups of four.
+ */
+const RECOVERY_CODE_COUNT = 10;
 
 /** Wrong codes in a row before verification locks, and for how long. */
 const MFA_MAX_ATTEMPTS = 5;
@@ -169,8 +185,8 @@ export class AuthService {
       if (!target) throw new ForbiddenException('You do not have access to that company');
 
       const permissions = await this.loadPermissions(userId, toTenantId);
-      const [found] = await db.select({ mfaEnabledAt: user.mfaEnabledAt }).from(user)
-        .where(eq(user.id, userId));
+      const [found] = await db.select({ mfaEnabledAt: user.mfaEnabledAt, mfaRecoveryCodes: user.mfaRecoveryCodes })
+        .from(user).where(eq(user.id, userId));
 
       return {
         // A verified second factor carries across: it proved the PERSON holds
@@ -180,7 +196,7 @@ export class AuthService {
         ...this.issueTokens({
           sub: userId, tid: target.tenantId, eid: target.employeeId, mfa: mfaVerified,
         }),
-        ...mfaStatusOf(permissions, found ?? { mfaEnabledAt: null }),
+        ...mfaStatusOf(permissions, found ?? NO_MFA),
         activeTenant: toOption(target),
         tenants: memberships.map(toOption),
       };
@@ -190,23 +206,28 @@ export class AuthService {
   /** For /auth/me: so the web app knows, on any page load, whether to ask for a code. */
   async mfaStatus(actor: Actor): Promise<MfaStatus> {
     const [found] = await withoutTenantIsolation(this.db, 'mfa: the login is global, not per company', (db) =>
-      db.select({ mfaEnabledAt: user.mfaEnabledAt }).from(user).where(eq(user.id, actor.userId)));
-    return mfaStatusOf(actor.permissions, found ?? { mfaEnabledAt: null });
+      db.select({ mfaEnabledAt: user.mfaEnabledAt, mfaRecoveryCodes: user.mfaRecoveryCodes })
+        .from(user).where(eq(user.id, actor.userId)));
+    return mfaStatusOf(actor.permissions, found ?? NO_MFA);
   }
 
   /**
    * Start setting up an authenticator: mint a secret and hand it over once, as
-   * a QR code and as text.
+   * a QR code and as text. It stays pending — verifying nothing — until
+   * `confirmMfaEnrolment` sees a code from it.
    *
-   * Runs on a half-authenticated token — that is the only kind a user without
-   * MFA can hold. So whoever has the password first can enrol their own phone:
-   * trust on first use, the same as every TOTP rollout. The guard against it is
-   * ordering — enrol at first sign-in, before the password has had time to leak.
+   * The first time, this runs on a half-authenticated token — the only kind a
+   * user without MFA can hold. So whoever has the password first can enrol
+   * their own phone: trust on first use, the same as every TOTP rollout. The
+   * guard against it is ordering — enrol at first sign-in, before the password
+   * has had time to leak.
    *
-   * Refused once MFA is on. Otherwise a stolen password alone could swap the
-   * victim's authenticator for the thief's, and the second factor would be
-   * worth exactly as much as the first. A lost phone is a reset by an admin
-   * holding `user.manage` (UserService.resetMfa), after which this runs again.
+   * Once MFA is on, only a token that has passed a code — or a recovery code,
+   * when the phone is gone — may start a replacement. Otherwise a stolen
+   * password alone could swap the victim's authenticator for the thief's, and
+   * the second factor would be worth exactly as much as the first. The working
+   * authenticator stays on until the new one is confirmed, so an abandoned
+   * replacement locks nobody out.
    *
    * Starting again before confirming replaces the pending secret, so scanning
    * the QR code twice cannot leave two phones generating valid codes.
@@ -216,8 +237,8 @@ export class AuthService {
 
     const [found] = await withoutTenantIsolation(this.db, 'mfa: the login is global, not per company', (db) =>
       db.update(user)
-        .set({ mfaSecret: this.pii.encrypt(secret), updatedAt: new Date() })
-        .where(and(eq(user.id, actor.userId), isNull(user.mfaEnabledAt)))
+        .set({ mfaPendingSecret: this.pii.encrypt(secret), updatedAt: new Date() })
+        .where(and(eq(user.id, actor.userId), actor.mfaVerified ? undefined : isNull(user.mfaEnabledAt)))
         .returning({ email: user.email }));
 
     if (!found) throw new ConflictException('Two-factor authentication is already set up');
@@ -228,57 +249,149 @@ export class AuthService {
 
   /**
    * Finish enrolment: the first code from the new authenticator proves it
-   * holds the secret. Only now does MFA count — and this token is MFA-verified,
-   * because the user has just produced a valid code.
+   * holds the pending secret. Only now does it count, replacing any old one —
+   * and this token is MFA-verified, because the user has just produced a code.
+   *
+   * Issues a fresh set of recovery codes, shown once. A replacement usually
+   * follows a lost phone, often recovered from with one of the old codes; the
+   * rest of that set might be on the same lost piece of paper.
    *
    * Runs in the active company's transaction so the audit entry commits with
    * the change. `user` itself is outside RLS; the tenant context only decides
    * whose audit log records it.
    */
-  async confirmMfaEnrolment(actor: Actor, code: string): Promise<Tokens> {
-    const employeeId = await withTenant(this.db, actor.tenantId, async (tx) => {
+  async confirmMfaEnrolment(actor: Actor, code: string): Promise<Tokens & RecoveryCodes> {
+    const { employeeId, recoveryCodes } = await withTenant(this.db, actor.tenantId, async (tx) => {
       const membership = await activeMembership(tx, actor);
       const found = await lockUser(tx, actor.userId);
 
-      if (found.mfaEnabledAt) throw new ConflictException('Two-factor authentication is already set up');
-      if (!found.mfaSecret) {
+      const replacing = Boolean(found.mfaEnabledAt);
+      if (replacing && !actor.mfaVerified) {
+        throw new ConflictException('Two-factor authentication is already set up');
+      }
+      if (!found.mfaPendingSecret) {
         throw new BadRequestException('Start setting up two-factor authentication first');
       }
 
       // No attempt limit here. Whoever is confirming generated this secret a
       // moment ago; there is nothing to guess.
-      const step = matchingStep(code, this.pii.decrypt(found.mfaSecret), Date.now());
+      const step = matchingStep(code, this.pii.decrypt(found.mfaPendingSecret), Date.now());
       if (step === null) throw wrongCode();
 
+      const codes = newRecoveryCodes();
       await tx.update(user).set({
+        mfaSecret: found.mfaPendingSecret,
+        mfaPendingSecret: null,
         mfaEnabledAt: new Date(),
         // So the code that confirmed enrolment cannot also be replayed to verify.
         mfaLastUsedStep: step,
         mfaFailedAttempts: 0,
         mfaLockedUntil: null,
+        mfaRecoveryCodes: codes.map(hashRecoveryCode),
         updatedAt: new Date(),
       }).where(eq(user.id, actor.userId));
 
-      await this.audit.record(tx, actor, { entity: 'user', entityId: actor.userId, action: 'MFA_ENROLLED' });
-      return membership.employeeId;
+      await this.audit.record(tx, actor, {
+        entity: 'user', entityId: actor.userId, action: replacing ? 'MFA_REPLACED' : 'MFA_ENROLLED',
+      });
+      return { employeeId: membership.employeeId, recoveryCodes: codes };
     });
 
-    return this.issueTokens({ sub: actor.userId, tid: actor.tenantId, eid: employeeId, mfa: true });
+    return {
+      ...this.issueTokens({ sub: actor.userId, tid: actor.tenantId, eid: employeeId, mfa: true }),
+      recoveryCodes,
+    };
+  }
+
+  /** A code from the authenticator, for an MFA-verified token. */
+  async verifyMfa(actor: Actor, code: string): Promise<Tokens> {
+    const { tokens } = await this.verifySecondFactor(actor, (found, now) => {
+      const step = matchingStep(code, this.pii.decrypt(found.mfaSecret!), now);
+      // A code already accepted — or one older than it — is refused exactly as
+      // a wrong one is, and counts as an attempt (RFC 6238 §5.2).
+      const fresh = step !== null && (found.mfaLastUsedStep === null || step > found.mfaLastUsedStep);
+      return fresh ? { set: { mfaLastUsedStep: step } } : null;
+    }, wrongCode);
+    return tokens;
   }
 
   /**
-   * The second factor, for a user who has one: a code in exchange for an
-   * MFA-verified token.
+   * A recovery code in place of the authenticator, for when the phone is gone.
+   * Each works once. Wrong ones count toward the same lockout as wrong codes:
+   * they are a second way to guess at the same door.
+   *
+   * The verified token this returns may set up a replacement authenticator,
+   * which is the point — after this, the user should.
+   */
+  async recoverMfa(actor: Actor, recoveryCode: string): Promise<Tokens & { recoveryCodesLeft: number }> {
+    const hash = hashRecoveryCode(recoveryCode);
+
+    const { tokens, set } = await this.verifySecondFactor(actor, (found) => {
+      if (!found.mfaRecoveryCodes.includes(hash)) return null;
+      const left = found.mfaRecoveryCodes.filter((h) => h !== hash);
+      return {
+        set: { mfaRecoveryCodes: left },
+        // Worth a line an admin can find: either the phone is lost, or the
+        // password and a code have been.
+        audit: {
+          entity: 'user', entityId: actor.userId, action: 'MFA_RECOVERY_CODE_USED', after: { left: left.length },
+        },
+      };
+    }, () => validationFailed([{
+      field: 'recoveryCode',
+      message: 'That recovery code didn’t match, or has already been used.',
+    }]));
+
+    return { ...tokens, recoveryCodesLeft: set.mfaRecoveryCodes!.length };
+  }
+
+  /**
+   * A new set of recovery codes, replacing the old — for someone who has used
+   * some, or cannot find them. Only on a verified token: the codes are as good
+   * as the authenticator, so minting them needs proof of holding it.
+   */
+  async regenerateRecoveryCodes(actor: Actor): Promise<RecoveryCodes> {
+    if (!actor.mfaVerified) {
+      throw new ForbiddenException({
+        code: 'MFA_REQUIRED',
+        detail: 'New recovery codes need a code from your authenticator first.',
+      });
+    }
+
+    return withTenant(this.db, actor.tenantId, async (tx) => {
+      await activeMembership(tx, actor);
+      const found = await lockUser(tx, actor.userId);
+      if (!found.mfaEnabledAt) {
+        throw new BadRequestException({ code: 'MFA_NOT_ENROLLED', message: 'Set up two-factor authentication first' });
+      }
+
+      const codes = newRecoveryCodes();
+      await tx.update(user).set({ mfaRecoveryCodes: codes.map(hashRecoveryCode), updatedAt: new Date() })
+        .where(eq(user.id, actor.userId));
+      await this.audit.record(tx, actor, {
+        entity: 'user', entityId: actor.userId, action: 'MFA_RECOVERY_CODES_REISSUED',
+      });
+      return { recoveryCodes: codes };
+    });
+  }
+
+  /**
+   * The second factor, for a user who has one: `check` decides whether this
+   * attempt — a code, or a recovery code — is good, and what to record if so.
    *
    * The user row is locked for the check, so concurrent guesses queue up and
    * each one is counted — without the lock, a burst of parallel requests would
    * all read the same attempt count and all get a try.
    *
-   * A wrong code must COMMIT its attempt count, so the transaction returns an
+   * A wrong attempt must COMMIT its count, so the transaction returns an
    * outcome and the refusal is thrown after it, never inside it: an exception
    * in there would roll the count back and make the limit decorative.
    */
-  async verifyMfa(actor: Actor, code: string): Promise<Tokens> {
+  private async verifySecondFactor(
+    actor: Actor,
+    check: (found: User, now: number) => { set: Partial<NewUser>; audit?: AuditEntry } | null,
+    refusal: () => Error,
+  ): Promise<{ tokens: Tokens; set: Partial<NewUser> }> {
     const now = Date.now();
 
     const outcome = await withTenant(this.db, actor.tenantId, async (tx) => {
@@ -296,13 +409,9 @@ export class AuthService {
         return { kind: 'locked', until: found.mfaLockedUntil } as const;
       }
 
-      const step = matchingStep(code, this.pii.decrypt(found.mfaSecret), now);
+      const passed = check(found, now);
 
-      // A code already accepted — or one older than it — is refused exactly as
-      // a wrong one is, and counts as an attempt (RFC 6238 §5.2).
-      const fresh = step !== null && (found.mfaLastUsedStep === null || step > found.mfaLastUsedStep);
-
-      if (!fresh) {
+      if (!passed) {
         const attempts = found.mfaFailedAttempts + 1;
         if (attempts < MFA_MAX_ATTEMPTS) {
           await tx.update(user).set({ mfaFailedAttempts: attempts }).where(eq(user.id, actor.userId));
@@ -322,12 +431,13 @@ export class AuthService {
         return { kind: 'locked', until } as const;
       }
 
-      await tx.update(user).set({ mfaFailedAttempts: 0, mfaLockedUntil: null, mfaLastUsedStep: step })
+      await tx.update(user).set({ mfaFailedAttempts: 0, mfaLockedUntil: null, ...passed.set })
         .where(eq(user.id, actor.userId));
-      return { kind: 'verified', employeeId: membership.employeeId } as const;
+      if (passed.audit) await this.audit.record(tx, actor, passed.audit);
+      return { kind: 'verified', employeeId: membership.employeeId, set: passed.set } as const;
     });
 
-    if (outcome.kind === 'wrong') throw wrongCode();
+    if (outcome.kind === 'wrong') throw refusal();
 
     if (outcome.kind === 'locked') {
       const minutes = Math.max(1, Math.ceil((outcome.until.getTime() - now) / 60_000));
@@ -337,9 +447,10 @@ export class AuthService {
       }, HttpStatus.TOO_MANY_REQUESTS);
     }
 
-    return this.issueTokens({
-      sub: actor.userId, tid: actor.tenantId, eid: outcome.employeeId, mfa: true,
-    });
+    return {
+      tokens: this.issueTokens({ sub: actor.userId, tid: actor.tenantId, eid: outcome.employeeId, mfa: true }),
+      set: outcome.set,
+    };
   }
 
   /**
@@ -453,9 +564,44 @@ function toOption(m: { tenantId: string; name: string; slug: string }): TenantOp
  * automatically.
  */
 function mfaStatusOf(
-  permissions: ReadonlySet<Permission>, found: { mfaEnabledAt: Date | null },
+  permissions: ReadonlySet<Permission>, found: { mfaEnabledAt: Date | null; mfaRecoveryCodes: string[] },
 ): MfaStatus {
-  return { mfaRequired: requiresMfa([...permissions]), mfaEnrolled: Boolean(found.mfaEnabledAt) };
+  return {
+    mfaRequired: requiresMfa([...permissions]),
+    mfaEnrolled: Boolean(found.mfaEnabledAt),
+    recoveryCodesLeft: found.mfaEnabledAt ? found.mfaRecoveryCodes.length : 0,
+  };
+}
+
+const NO_MFA = { mfaEnabledAt: null, mfaRecoveryCodes: [] };
+
+const BASE32 = 'abcdefghijklmnopqrstuvwxyz234567';
+
+/** A fresh set of recovery codes, as the user is shown them: `abcd-efgh-ijkm-nopq`. */
+function newRecoveryCodes(): string[] {
+  return Array.from({ length: RECOVERY_CODE_COUNT }, () => {
+    const bytes = randomBytes(10); // 80 bits: 16 base32 characters exactly
+    let bits = 0;
+    let value = 0;
+    let out = '';
+    for (const byte of bytes) {
+      value = (value << 8) | byte;
+      bits += 8;
+      while (bits >= 5) {
+        out += BASE32[(value >>> (bits - 5)) & 31];
+        bits -= 5;
+      }
+    }
+    return out.match(/.{4}/g)!.join('-');
+  });
+}
+
+/**
+ * A plain SHA-256, as for invitation tokens: 80 random bits leave no dictionary
+ * to slow down, and lookup must compare against ten of them per attempt.
+ */
+function hashRecoveryCode(code: string): string {
+  return createHash('sha256').update(normaliseRecoveryCode(code)).digest('hex');
 }
 
 /**

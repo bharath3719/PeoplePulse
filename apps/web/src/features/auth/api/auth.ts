@@ -16,6 +16,11 @@ interface Tokens {
   refreshToken: string;
 }
 
+export interface RecoveryCodes {
+  /** Shown once: the server keeps only their hashes. */
+  recoveryCodes: string[];
+}
+
 export interface MfaEnrolment {
   secret: string;
   otpauthUri: string;
@@ -24,19 +29,31 @@ export interface MfaEnrolment {
 }
 
 /**
- * Both MFA steps end the same way: a new token that carries the verified second
+ * Every MFA step ends the same way: a new token that carries the verified second
  * factor replaces the old one, and the session is re-read so everything gated
  * on `mfaVerified` sees it.
+ *
+ * Confirming enrolment holds the re-read back (`refreshSession: false`) until
+ * the recovery codes it returned have been saved — see MfaEnrolment.
  */
-function useMfaTokenSwap<TInput>(mutationFn: (input: TInput) => Promise<Tokens>) {
+function useMfaTokenSwap<TInput, TResult extends Tokens>(
+  mutationFn: (input: TInput) => Promise<TResult>,
+  { refreshSession = true } = {},
+) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn,
     onSuccess: async (result) => {
       tokenStore.set(result.accessToken);
-      await qc.invalidateQueries({ queryKey: ['session'] });
+      if (refreshSession) await qc.invalidateQueries({ queryKey: ['session'] });
     },
   });
+}
+
+/** Re-read the session, for the step that deferred it. */
+export function useRefreshSession() {
+  const qc = useQueryClient();
+  return () => qc.invalidateQueries({ queryKey: ['session'] });
 }
 
 /** A code from the authenticator app, for an MFA-verified token. */
@@ -44,16 +61,34 @@ export function useVerifyMfa() {
   return useMfaTokenSwap((code: string) => api.post<Tokens>('/auth/mfa/verify', { code }));
 }
 
-/** Mint a secret to scan. Each call replaces the last unconfirmed one. */
+/** A recovery code instead, when the phone is gone. Each works once. */
+export function useRecoverMfa() {
+  return useMfaTokenSwap((recoveryCode: string) =>
+    api.post<Tokens & { recoveryCodesLeft: number }>('/auth/mfa/recover', { recoveryCode }));
+}
+
+/** A new set of recovery codes, replacing the old. Needs a verified session. */
+export function useRegenerateRecoveryCodes() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.post<RecoveryCodes>('/auth/mfa/recovery-codes'),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['session'] }),
+  });
+}
+
+/** Mint a secret to scan — a first authenticator, or a replacement. Each call replaces the last unconfirmed one. */
 export function useStartMfaEnrolment() {
   return useMutation({
     mutationFn: () => api.post<MfaEnrolment>('/auth/mfa/enrol'),
   });
 }
 
-/** The first code from the newly-scanned app switches MFA on. */
+/** The first code from the newly-scanned app switches it on, and returns recovery codes to save. */
 export function useConfirmMfaEnrolment() {
-  return useMfaTokenSwap((code: string) => api.post<Tokens>('/auth/mfa/enrol/confirm', { code }));
+  return useMfaTokenSwap(
+    (code: string) => api.post<Tokens & RecoveryCodes>('/auth/mfa/enrol/confirm', { code }),
+    { refreshSession: false },
+  );
 }
 
 export function useLogin() {

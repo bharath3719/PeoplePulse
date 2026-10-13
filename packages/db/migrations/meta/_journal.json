@@ -22,6 +22,13 @@
       "when": 1791316169631,
       "tag": "0002_gifted_mariko_yashida",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1791924975982,
+      "tag": "0003_breezy_oracle",
+      "breakpoints": true
     }
   ]
 }

@@ -2,7 +2,7 @@
 
 Cloud HRMS for Indian SMBs (10–200 employees). Core HR, Attendance, Leave, India-statutory Payroll, ATS, Performance, and L&D in one multi-tenant platform.
 
-**Status: Slice 1 is built and runs end to end.** Company signup → login → two-factor authentication → inviting users → managing their access (roles, removal, two-factor reset) → company switcher → employee master (create, list, detail, edit, bank details, Excel import) → org structure → company settings, on an RLS-isolated tenant. 193 tests green.
+**Status: Slice 1 is built and runs end to end.** Company signup → login → two-factor authentication → inviting users → managing their access (roles, removal, two-factor reset) → company switcher → employee master (create, list, detail, edit, bank details, Excel import) → org structure → company settings, on an RLS-isolated tenant. 199 tests green.
 
 ---
 
@@ -54,7 +54,7 @@ Two rules that are not negotiable, because violating either is a compliance defe
 npm install
 cp .env.example .env          # fill in your Postgres password
 npm run db:migrate            # schema + RLS policies + the peoplepulse_app role
-npm test                      # 193 tests, incl. 13 tenant-isolation + 22 employee-edit/delete + 5 switcher + 28 invitation/access + 14 MFA, on a real DB
+npm test                      # 199 tests, incl. 13 tenant-isolation + 22 employee-edit/delete + 5 switcher + 28 invitation/access + 18 MFA, on a real DB
 
 npm run dev:api               # :3000/api/v1
 npm run dev:web               # :5173, proxies /api to the API
@@ -135,16 +135,22 @@ rules:
 of `MFA_REQUIRED_PERMISSIONS` (bank edit, salary edit, payroll approve/finalize, role and user
 management) means those routes refuse a token without a verified code. Setup is an authenticator
 app (TOTP): scan a QR code, confirm with the first code. It is asked for at sign-in once set up, and
-offered in place — on the bank-details page, say — when it is not. Four rules:
+offered in place — on the bank-details page, say — when it is not. Confirming setup issues ten
+one-time **recovery codes**, shown once and stored only as hashes; one stands in for a code when the
+phone is gone, and the session it opens can set up a replacement authenticator (Security). Five rules:
 
 - **The token's `mfa` claim means a code was verified on it, never "none was needed".** It used to
   be `!requiresMfa(permissions)`, so someone granted `employee.bank.edit` mid-session carried a
   token that already vouched for a code they had never entered. A verified code does carry across a
   company switch: it proved the person holds their phone, whichever company they are looking at.
-- **A password alone cannot replace the authenticator.** Enrolment runs on a half-authenticated
-  token (that is all an unenrolled user can hold), so it is refused once MFA is on — otherwise a
-  stolen password could swap in the thief's phone. The secret is encrypted at rest, and counts only
-  once a code from it has been confirmed.
+- **A password alone cannot replace the authenticator.** First enrolment runs on a
+  half-authenticated token (that is all an unenrolled user can hold); once MFA is on, only a token
+  that has passed a code or a recovery code may start a replacement — otherwise a stolen password
+  could swap in the thief's phone. The new secret waits in its own column, verifying nothing, until
+  a code from it is confirmed, so an abandoned replacement leaves the old phone working.
+- **A recovery code is one more way to guess at the same door.** Wrong ones count toward the same
+  lockout as wrong codes; each right one works once and is audited. Replacing the authenticator
+  issues a fresh set, because the rest of the old set may be on the same lost piece of paper.
 - **A code works once.** The last accepted time step is stored, and a code at or before it is
   refused (RFC 6238 §5.2) — a code read over a shoulder cannot be replayed within its minute.
 - **Five wrong codes lock verification for 15 minutes**, and the lock is audited. Attempts are
@@ -171,19 +177,20 @@ employee record. Four rules:
 
 A two-factor reset is refused for a login that also belongs to another company: the second factor
 belongs to the login, so one company's admin would be switching it off for the other's data too.
+That person — like a company's only full admin, whom nobody else can manage — recovers with a
+recovery code instead.
 
 ### Still open in Slice 1
 
-- **Some lost authenticators still cannot be reset.** An admin can reset anyone they could manage
-  (above), but there are no recovery codes, so two cases remain stuck: the company's *only* holder
-  of everything (usually the founder — nobody else can manage them), and a login that belongs to
-  more than one company. Both need someone with database access to clear `mfa_enabled_at`, until
-  recovery codes or a support console ([D-18](docs/decisions/OPEN.md)) exist.
+- **A lost phone with no recovery codes left is still stuck** for the two cases no admin can reset
+  (above), and for anyone who set up two-factor before recovery codes existed and has not made a
+  set — the Security page asks them to. Those need someone with database access to clear
+  `mfa_enabled_at`, until a support console ([D-18](docs/decisions/OPEN.md)) exists.
 - **Invitations are not emailed.** The inviter copies the link and sends it. So the link does not
   prove the invitee owns the address: for a *new* address, whoever holds it chooses the password.
   (It cannot take over an existing login — that needs the login's password.) Email delivery closes
   this without changing the accept flow.
-- **"Has been paid" is a stub until payroll exists.** Deletion is two-tier (below), but the check
+- **"Has been paid" is a stub until payroll exists.** Deletion is two-tier (above), but the check
   that picks the tier returns *never paid* for everyone, because there are no payroll runs yet. The
   day `payroll_run_item` lands, `hasFinalisedPayroll` must check it — and that table's foreign key to
   `employee` must be `ON DELETE RESTRICT`, so the database refuses to hard-delete anyone paid even if

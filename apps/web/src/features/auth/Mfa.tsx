@@ -1,12 +1,14 @@
 import { useState, type ReactNode } from 'react';
 import { ShieldCheck } from 'lucide-react';
-import { mfaCodeSchema } from '@peoplepulse/core';
+import { mfaCodeSchema, mfaRecoveryCodeSchema } from '@peoplepulse/core';
 import { ApiError } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Field } from '@/components/ui/field';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
-import { useConfirmMfaEnrolment, useStartMfaEnrolment, useVerifyMfa } from './api/auth';
+import {
+  useConfirmMfaEnrolment, useRecoverMfa, useRefreshSession, useStartMfaEnrolment, useVerifyMfa,
+} from './api/auth';
 import { usePermissions } from './permissions';
 
 /**
@@ -18,42 +20,40 @@ import { usePermissions } from './permissions';
  * for the user to have one before they ask.
  */
 
-/**
- * One code, two uses: `verify` proves a set-up authenticator is to hand;
- * `confirm` proves a freshly scanned one works, and switches MFA on.
- */
-export function MfaCodeForm({
-  purpose,
-  onDone,
+/** A wrong code comes back against the field; a lockout (429) does not. */
+function messageOf(err: unknown): string {
+  return err instanceof ApiError ? (err.fieldErrors[0]?.message ?? err.message) : 'Something went wrong';
+}
+
+/** The 6-digit field and its button. The caller decides what the code is for. */
+function CodeForm({
+  label,
+  pending,
+  error,
+  onCode,
 }: {
-  purpose: 'verify' | 'confirm';
-  onDone?: () => void;
+  label: string;
+  pending: boolean;
+  error: string | undefined;
+  onCode: (code: string) => void;
 }) {
-  const verify = useVerifyMfa();
-  const confirm = useConfirmMfaEnrolment();
-  const mutation = purpose === 'verify' ? verify : confirm;
-  const [error, setError] = useState<string>();
+  const [invalid, setInvalid] = useState<string>();
 
   function submit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     const parsed = mfaCodeSchema.safeParse({ code: String(new FormData(e.currentTarget).get('code') ?? '') });
     if (!parsed.success) {
-      setError(parsed.error.errors[0]?.message);
+      setInvalid(parsed.error.errors[0]?.message);
       return;
     }
-
-    setError(undefined);
-    mutation.mutate(parsed.data.code, {
-      onSuccess: () => onDone?.(),
-      // A wrong code comes back against the field; a lockout (429) does not.
-      onError: (err) =>
-        setError(err instanceof ApiError ? (err.fieldErrors[0]?.message ?? err.message) : 'Something went wrong'),
-    });
+    setInvalid(undefined);
+    onCode(parsed.data.code);
   }
 
+  const shown = invalid ?? error;
   return (
     <form onSubmit={submit} className="space-y-4" noValidate>
-      <Field label="6-digit code" required error={error}>
+      <Field label="6-digit code" required error={shown}>
         <Input
           name="code"
           inputMode="numeric"
@@ -62,40 +62,188 @@ export function MfaCodeForm({
           maxLength={7}
           placeholder="123 456"
           className="tabular text-lg tracking-widest"
-          aria-invalid={Boolean(error)}
+          aria-invalid={Boolean(shown)}
         />
       </Field>
-      <Button type="submit" className="w-full" disabled={mutation.isPending}>
-        {mutation.isPending ? 'Checking…' : purpose === 'verify' ? 'Verify' : 'Turn on two-factor'}
+      <Button type="submit" className="w-full" disabled={pending}>
+        {pending ? 'Checking…' : label}
       </Button>
     </form>
   );
 }
 
 /**
- * Set up an authenticator app: scan, then type the first code it shows.
+ * A code from the set-up authenticator — or, for a lost phone, one of the
+ * recovery codes. Either way the result is an MFA-verified token.
+ *
+ * `onRecovered` lets the caller send someone who just used a recovery code
+ * somewhere they can replace their authenticator; it defaults to `onDone`.
+ */
+export function MfaCodeForm({ onDone, onRecovered }: { onDone?: () => void; onRecovered?: () => void }) {
+  const verify = useVerifyMfa();
+  const [recovering, setRecovering] = useState(false);
+
+  return (
+    <div className="space-y-3">
+      {recovering ? (
+        <RecoveryCodeForm onDone={onRecovered ?? onDone} />
+      ) : (
+        <CodeForm
+          label="Verify"
+          pending={verify.isPending}
+          error={verify.error ? messageOf(verify.error) : undefined}
+          onCode={(code) => verify.mutate(code, { onSuccess: () => onDone?.() })}
+        />
+      )}
+      <button
+        type="button"
+        onClick={() => setRecovering(!recovering)}
+        className="w-full text-center text-sm text-muted-foreground hover:text-foreground"
+      >
+        {recovering ? 'Use a code from your authenticator app' : 'Lost your phone? Use a recovery code'}
+      </button>
+    </div>
+  );
+}
+
+function RecoveryCodeForm({ onDone }: { onDone?: () => void }) {
+  const recover = useRecoverMfa();
+  const [error, setError] = useState<string>();
+
+  function submit(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    const parsed = mfaRecoveryCodeSchema.safeParse({
+      recoveryCode: String(new FormData(e.currentTarget).get('recoveryCode') ?? ''),
+    });
+    if (!parsed.success) {
+      setError(parsed.error.errors[0]?.message);
+      return;
+    }
+    setError(undefined);
+    recover.mutate(parsed.data.recoveryCode, {
+      onSuccess: () => onDone?.(),
+      onError: (err) => setError(messageOf(err)),
+    });
+  }
+
+  return (
+    <form onSubmit={submit} className="space-y-4" noValidate>
+      <Field
+        label="Recovery code"
+        required
+        error={error}
+        hint="One of the codes you saved when you set up two-factor. Each works once."
+      >
+        <Input
+          name="recoveryCode"
+          autoComplete="off"
+          autoFocus
+          placeholder="abcd-efgh-ijkm-nopq"
+          className="tabular tracking-wider"
+          aria-invalid={Boolean(error)}
+        />
+      </Field>
+      <Button type="submit" className="w-full" disabled={recover.isPending}>
+        {recover.isPending ? 'Checking…' : 'Use recovery code'}
+      </Button>
+    </form>
+  );
+}
+
+/**
+ * Recovery codes, shown the one time they exist in the clear. The server keeps
+ * only their hashes, so "I've saved them" is the last chance.
+ */
+export function RecoveryCodes({ codes, onSaved }: { codes: string[]; onSaved: () => void }) {
+  const [copied, setCopied] = useState(false);
+
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(codes.join('\n'));
+      setCopied(true);
+    } catch {
+      // Clipboard refused. The codes are on screen and selectable.
+      setCopied(false);
+    }
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="space-y-1">
+        <p className="text-sm font-medium">Save your recovery codes</p>
+        <p className="text-sm text-muted-foreground">
+          If you lose your phone, each of these signs you in once instead of a code. Keep them
+          somewhere safe that isn&apos;t your phone &mdash; a password manager, or on paper. This is
+          the only time they&apos;re shown.
+        </p>
+      </div>
+      <ul className="tabular grid grid-cols-2 gap-x-6 gap-y-1 rounded-md bg-muted px-4 py-3 text-sm">
+        {codes.map((c) => <li key={c}>{c}</li>)}
+      </ul>
+      <div className="flex gap-2">
+        <Button type="button" variant="outline" onClick={copy}>{copied ? 'Copied' : 'Copy'}</Button>
+        <Button type="button" onClick={onSaved}>I&apos;ve saved them</Button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Set up an authenticator app — or replace one: scan, type the first code it
+ * shows, then save the recovery codes that come back.
  *
  * The secret is minted on a click, not on mount. Minting is a POST that
  * replaces any earlier unconfirmed secret, and an effect that runs twice
  * (StrictMode does exactly that) could leave the QR code on screen naming a
  * secret the server has already replaced.
+ *
+ * The session is re-read only once the codes are saved: it is what flips
+ * `mfaVerified`, and a parent like RequireMfa would swap this component out —
+ * codes and all — the moment it did.
  */
-export function MfaEnrolment({ onDone }: { onDone?: () => void }) {
+export function MfaEnrolment({
+  onDone,
+  onCancel,
+  replacing = false,
+}: {
+  onDone?: () => void;
+  /** Offered until the new authenticator is confirmed — after that there is nothing to cancel. */
+  onCancel?: () => void;
+  replacing?: boolean;
+}) {
   const start = useStartMfaEnrolment();
+  const confirm = useConfirmMfaEnrolment();
+  const refreshSession = useRefreshSession();
+
+  if (confirm.data) {
+    return (
+      <RecoveryCodes
+        codes={confirm.data.recoveryCodes}
+        onSaved={() => {
+          void refreshSession();
+          onDone?.();
+        }}
+      />
+    );
+  }
 
   if (!start.data) {
     return (
       <div className="space-y-3">
         <p className="text-sm text-muted-foreground">
-          You&apos;ll need an authenticator app on your phone — Google Authenticator, Microsoft
-          Authenticator, or any app that scans a sign-in QR code.
+          {replacing
+            ? 'Your current authenticator keeps working until the new one is set up.'
+            : 'You’ll need an authenticator app on your phone — Google Authenticator, Microsoft Authenticator, or any app that scans a sign-in QR code.'}
         </p>
         {start.error && (
           <p className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">{start.error.message}</p>
         )}
-        <Button onClick={() => start.mutate()} disabled={start.isPending}>
-          {start.isPending ? 'Preparing…' : 'Set up authenticator app'}
-        </Button>
+        <div className="flex gap-2">
+          <Button onClick={() => start.mutate()} disabled={start.isPending}>
+            {start.isPending ? 'Preparing…' : replacing ? 'Set up the new authenticator' : 'Set up authenticator app'}
+          </Button>
+          {onCancel && <Button variant="ghost" onClick={onCancel}>Cancel</Button>}
+        </div>
       </div>
     );
   }
@@ -121,7 +269,13 @@ export function MfaEnrolment({ onDone }: { onDone?: () => void }) {
 
       <div className="space-y-3">
         <p className="text-sm"><span className="font-medium">2.</span> Enter the code it shows.</p>
-        <MfaCodeForm purpose="confirm" onDone={onDone} />
+        <CodeForm
+          label="Turn on two-factor"
+          pending={confirm.isPending}
+          error={confirm.error ? messageOf(confirm.error) : undefined}
+          onCode={(code) => confirm.mutate(code)}
+        />
+        {onCancel && <Button variant="ghost" size="sm" onClick={onCancel}>Cancel</Button>}
       </div>
     </div>
   );
@@ -131,7 +285,7 @@ export function MfaEnrolment({ onDone }: { onDone?: () => void }) {
 export function MfaChallenge({ onDone }: { onDone?: () => void }) {
   const { session } = usePermissions();
   return session?.mfaEnrolled
-    ? <MfaCodeForm purpose="verify" onDone={onDone} />
+    ? <MfaCodeForm onDone={onDone} />
     : <MfaEnrolment onDone={onDone} />;
 }
 

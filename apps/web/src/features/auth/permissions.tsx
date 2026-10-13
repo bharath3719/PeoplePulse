@@ -36,6 +36,8 @@ export interface Session {
   mfaRequired: boolean;
   /** An authenticator is set up, so a code can be asked for. */
   mfaEnrolled: boolean;
+  /** Unused recovery codes. */
+  recoveryCodesLeft: number;
   permissions: Permission[];
   /** Every company this user may switch to. More than one only for external accountants (D-16). */
   tenants: TenantOption[];

@@ -402,7 +402,7 @@ export class UserService {
    * Refused for a login that also belongs to another company. The second
    * factor belongs to the login, not the membership, so a reset here would
    * strip it from their access there too — on the say-so of an admin that
-   * company never chose. That case needs a support process (D-18).
+   * company never chose. They recover with one of their recovery codes instead.
    */
   async resetMfa(actor: Actor, userId: string): Promise<void> {
     await withTenant(this.db, actor.tenantId, async (tx) => {
@@ -429,6 +429,8 @@ export class UserService {
       await tx.update(user).set({
         mfaSecret: null,
         mfaEnabledAt: null,
+        mfaPendingSecret: null,
+        mfaRecoveryCodes: [],
         mfaLastUsedStep: null,
         mfaFailedAttempts: 0,
         mfaLockedUntil: null,

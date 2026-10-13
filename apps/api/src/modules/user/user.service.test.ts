@@ -560,6 +560,8 @@ describeIfDb('resetting someone\'s two-factor', () => {
     await db.update(user).set({
       mfaSecret: 'encrypted-elsewhere',
       mfaEnabledAt: new Date(),
+      mfaPendingSecret: 'a-replacement-in-progress',
+      mfaRecoveryCodes: ['hash-of-a-code-they-may-have-lost'],
       mfaLastUsedStep: 1,
       mfaFailedAttempts: 3,
       mfaLockedUntil: new Date(Date.now() + 60_000),
@@ -574,7 +576,8 @@ describeIfDb('resetting someone\'s two-factor', () => {
 
     const [row] = await db.select().from(user).where(eq(user.id, lostPhone));
     expect(row).toMatchObject({
-      mfaSecret: null, mfaEnabledAt: null, mfaLastUsedStep: null, mfaFailedAttempts: 0, mfaLockedUntil: null,
+      mfaSecret: null, mfaEnabledAt: null, mfaPendingSecret: null, mfaRecoveryCodes: [],
+      mfaLastUsedStep: null, mfaFailedAttempts: 0, mfaLockedUntil: null,
     });
     expect((await service.listAccess(acmeOwner)).members.find((m) => m.userId === lostPhone)!.mfaEnabled).toBe(false);
 

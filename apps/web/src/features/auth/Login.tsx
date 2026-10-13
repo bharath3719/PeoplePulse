@@ -8,6 +8,8 @@ import { useLogin, useSignup } from './api/auth';
 import { MfaCodeForm } from './Mfa';
 
 const done = () => { window.location.href = '/employees'; };
+/** In on a recovery code: straight to where the lost authenticator can be replaced. */
+const recovered = () => { window.location.href = '/security'; };
 
 export function Login() {
   const [mode, setMode] = useState<'login' | 'signup'>('login');
@@ -33,7 +35,7 @@ export function Login() {
             <CardDescription>From the authenticator app on your phone.</CardDescription>
           </CardHeader>
           <CardContent>
-            <MfaCodeForm purpose="verify" onDone={done} />
+            <MfaCodeForm onDone={done} onRecovered={recovered} />
             <button
               type="button"
               onClick={() => {

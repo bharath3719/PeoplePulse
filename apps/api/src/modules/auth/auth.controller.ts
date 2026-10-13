@@ -5,7 +5,9 @@ import { ZodBody } from '../../platform/validation/zod.pipe';
 import { AuthService } from '../../platform/auth/auth.service';
 import { TenantService } from '../tenant/tenant.service';
 import { UserService } from '../user/user.service';
-import { mfaCodeSchema, type MfaCodeInput } from '@peoplepulse/core';
+import {
+  mfaCodeSchema, mfaRecoveryCodeSchema, type MfaCodeInput, type MfaRecoveryCodeInput,
+} from '@peoplepulse/core';
 import {
   loginSchema, signupSchema, switchTenantSchema,
   invitationTokenSchema, acceptInvitationSchema,
@@ -72,8 +74,24 @@ export class AuthController {
     return this.auth.verifyMfa(actorOrThrow(req), input.code);
   }
 
+  /** A recovery code in place of the authenticator, when the phone is gone. Each works once. */
+  @Post('mfa/recover')
+  @SkipMfa()
+  @HttpCode(200)
+  recoverMfa(@Req() req: AuthedRequest, @ZodBody(mfaRecoveryCodeSchema) input: MfaRecoveryCodeInput) {
+    return this.auth.recoverMfa(actorOrThrow(req), input.recoveryCode);
+  }
+
+  /** A new set of recovery codes, replacing the old. Needs a verified token; the service checks. */
+  @Post('mfa/recovery-codes')
+  @SkipMfa()
+  @HttpCode(200)
+  regenerateRecoveryCodes(@Req() req: AuthedRequest) {
+    return this.auth.regenerateRecoveryCodes(actorOrThrow(req));
+  }
+
   /**
-   * Set up an authenticator app. Two steps, because a secret the user's phone
+   * Set up an authenticator app — or, on a verified token, replace one. Two steps, because a secret the user's phone
    * never received must not switch MFA on: this one returns the secret (once —
    * it is not readable afterwards), and `confirm` switches MFA on when the
    * phone produces a matching code.

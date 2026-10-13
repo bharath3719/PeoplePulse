@@ -224,6 +224,15 @@ describeIfDb('two-factor authentication', () => {
     return { id, secret: own };
   }
 
+  /** Someone enrolled the real way, holding the recovery codes it issued. */
+  async function enrolledWithCodes(name: string, tenantId: string) {
+    const id = await login(`${name}-${randomUUID().slice(0, 8)}@example.test`);
+    await db.insert(userTenant).values({ userId: id, tenantId });
+    const own = (await service.startMfaEnrolment(actor(id, tenantId))).secret;
+    const { recoveryCodes } = await service.confirmMfaEnrolment(actor(id, tenantId), code(own, -1));
+    return { id, secret: own, codes: recoveryCodes };
+  }
+
   beforeAll(async () => {
     // Only Date is faked: the pg driver's timers must keep running.
     vi.useFakeTimers({ toFake: ['Date'] });
@@ -285,8 +294,9 @@ describeIfDb('two-factor authentication', () => {
     expect(enrolment.qrCode).toMatch(/^data:image\/png;base64,/);
 
     const [row] = await db.select().from(user).where(eq(user.id, priya));
-    expect(row!.mfaSecret).not.toContain(secret);
-    expect(row!.mfaSecret).toMatch(/^v1:/);
+    expect(row!.mfaPendingSecret).not.toContain(secret);
+    expect(row!.mfaPendingSecret).toMatch(/^v1:/);
+    expect(row!.mfaSecret).toBeNull();
     expect(row!.mfaEnabledAt).toBeNull();
   });
 
@@ -306,16 +316,25 @@ describeIfDb('two-factor authentication', () => {
     expect(refused).toBeInstanceOf(BadRequestException);
   });
 
-  it('switches MFA on with a matching code, and audits it', async () => {
+  it('switches MFA on with a matching code, issues recovery codes once, and audits it', async () => {
     // The code from one step ago: the window allows it, and it leaves "now"
     // and "next" free for the tests that follow.
     const tokens = await service.confirmMfaEnrolment(actor(priya, acme), code(secret, -1));
 
     expect(claims(tokens.accessToken)).toMatchObject({ sub: priya, tid: acme, mfa: true });
+    expect(tokens.recoveryCodes).toHaveLength(10);
+    expect(new Set(tokens.recoveryCodes).size).toBe(10);
+    for (const c of tokens.recoveryCodes) expect(c).toMatch(/^[a-z2-7]{4}(-[a-z2-7]{4}){3}$/);
 
     const [row] = await db.select().from(user).where(eq(user.id, priya));
     expect(row!.mfaEnabledAt).not.toBeNull();
+    expect(row!.mfaPendingSecret).toBeNull();
+    expect(pii.decrypt(row!.mfaSecret!)).toBe(secret);
+    // Only hashes are kept: a read of the table is not a way in.
+    expect(row!.mfaRecoveryCodes).toHaveLength(10);
+    expect(JSON.stringify(row!.mfaRecoveryCodes)).not.toContain(tokens.recoveryCodes[0]!.replace(/-/g, ''));
     expect(await auditActions(acme, priya)).toContain('MFA_ENROLLED');
+    expect((await service.mfaStatus(actor(priya, acme))).recoveryCodesLeft).toBe(10);
   });
 
   it('refuses to enrol again: a password alone must not replace the authenticator', async () => {
@@ -325,6 +344,7 @@ describeIfDb('two-factor authentication', () => {
 
     const [row] = await db.select().from(user).where(eq(user.id, priya));
     expect(pii.decrypt(row!.mfaSecret!)).toBe(secret);
+    expect(row!.mfaPendingSecret).toBeNull();
   });
 
   it('refuses the code that confirmed enrolment', async () => {
@@ -391,6 +411,80 @@ describeIfDb('two-factor authentication', () => {
     const statuses = outcomes.map((e) => (e as HttpException).getStatus()).sort();
 
     expect(statuses).toEqual([400, 400, 400, 400, 429, 429, 429, 429]);
+  });
+
+  it('takes a recovery code in place of the authenticator, once', async () => {
+    const lost = await enrolledWithCodes('lost-phone', acme);
+    const as = actor(lost.id, acme);
+
+    const tokens = await service.recoverMfa(as, lost.codes[3]!.toUpperCase().replace(/-/g, ' '));
+    expect(claims(tokens.accessToken).mfa).toBe(true);
+    expect(tokens.recoveryCodesLeft).toBe(9);
+    expect(await auditActions(acme, lost.id)).toContain('MFA_RECOVERY_CODE_USED');
+
+    // Used up — and refusing it counts as a guess.
+    expect(await rejection(service.recoverMfa(as, lost.codes[3]!))).toBeInstanceOf(BadRequestException);
+    const [row] = await db.select({ attempts: user.mfaFailedAttempts }).from(user).where(eq(user.id, lost.id));
+    expect(row!.attempts).toBe(1);
+  });
+
+  it('counts wrong recovery codes toward the same lockout as wrong codes', async () => {
+    const victim = await enrolledWithCodes('recovery-guess', acme);
+    const as = actor(victim.id, acme);
+
+    for (let i = 0; i < 2; i++) {
+      expect(await rejection(service.verifyMfa(as, wrong(victim.secret)))).toBeInstanceOf(BadRequestException);
+    }
+    for (let i = 0; i < 2; i++) {
+      expect(await rejection(service.recoverMfa(as, 'aaaa-aaaa-aaaa-aaaa'))).toBeInstanceOf(BadRequestException);
+    }
+    const fifth = await rejection(service.recoverMfa(as, 'bbbb-bbbb-bbbb-bbbb'));
+    expect((fifth as HttpException).getStatus()).toBe(HttpStatus.TOO_MANY_REQUESTS);
+
+    // Locked means locked: a genuine recovery code waits too.
+    const real = await rejection(service.recoverMfa(as, victim.codes[0]!));
+    expect((real as HttpException).getStatus()).toBe(HttpStatus.TOO_MANY_REQUESTS);
+  });
+
+  it('replaces the authenticator only on a verified token, keeping the old one on until the new one confirms', async () => {
+    const owner = await enrolledWithCodes('new-phone', acme);
+
+    // The password alone: refused.
+    expect(await rejection(service.startMfaEnrolment(actor(owner.id, acme)))).toBeInstanceOf(ConflictException);
+
+    // After a recovery code, the token is verified, and may start a replacement.
+    await service.recoverMfa(actor(owner.id, acme), owner.codes[0]!);
+    const next = (await service.startMfaEnrolment(actor(owner.id, acme, true))).secret;
+
+    // Abandoned half-way, the old authenticator still works.
+    const stillWorks = await service.verifyMfa(actor(owner.id, acme), code(owner.secret));
+    expect(claims(stillWorks.accessToken).mfa).toBe(true);
+    // And a half-authenticated token cannot finish the replacement.
+    expect(await rejection(service.confirmMfaEnrolment(actor(owner.id, acme), code(next))))
+      .toBeInstanceOf(ConflictException);
+
+    const confirmed = await service.confirmMfaEnrolment(actor(owner.id, acme, true), code(next, 1));
+    expect(confirmed.recoveryCodes).toHaveLength(10);
+    expect(await auditActions(acme, owner.id)).toContain('MFA_REPLACED');
+
+    // The old phone is now worth nothing; so is the old set of codes.
+    expect(await rejection(service.verifyMfa(actor(owner.id, acme), code(owner.secret, 1))))
+      .toBeInstanceOf(BadRequestException);
+    expect(await rejection(service.recoverMfa(actor(owner.id, acme), owner.codes[1]!)))
+      .toBeInstanceOf(BadRequestException);
+  });
+
+  it('reissues recovery codes only on a verified token, and the old set stops working', async () => {
+    const owner = await enrolledWithCodes('reissue', acme);
+
+    expect(await rejection(service.regenerateRecoveryCodes(actor(owner.id, acme)))).toBeInstanceOf(ForbiddenException);
+
+    const { recoveryCodes } = await service.regenerateRecoveryCodes(actor(owner.id, acme, true));
+    expect(recoveryCodes).toHaveLength(10);
+    expect(await rejection(service.recoverMfa(actor(owner.id, acme), owner.codes[0]!)))
+      .toBeInstanceOf(BadRequestException);
+    const tokens = await service.recoverMfa(actor(owner.id, acme), recoveryCodes[0]!);
+    expect(tokens.recoveryCodesLeft).toBe(9);
   });
 
   it('mints no token for a membership revoked since the last one', async () => {

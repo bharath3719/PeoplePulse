@@ -24,13 +24,27 @@ export const user = pgTable('user', {
   passwordHash: text('password_hash').notNull(),
 
   /**
-   * TOTP shared secret, encrypted at rest (PiiService). Set when enrolment
-   * starts; it counts only once `mfaEnabledAt` is set, which happens when the
-   * user proves their authenticator produces matching codes. A secret without
-   * that timestamp is a half-finished enrolment, and verifies nothing.
+   * TOTP shared secret, encrypted at rest (PiiService): the authenticator that
+   * is ON. Set, with `mfaEnabledAt`, only when the user proves their phone
+   * produces matching codes.
    */
   mfaSecret: text('mfa_secret'),
   mfaEnabledAt: timestamp('mfa_enabled_at', { withTimezone: true }),
+
+  /**
+   * A secret handed out by enrolment and not yet confirmed, encrypted at rest.
+   * Verifies nothing. Kept apart from `mfaSecret` so that replacing a lost or
+   * old phone cannot switch off the working authenticator before the new one
+   * has produced a code.
+   */
+  mfaPendingSecret: text('mfa_pending_secret'),
+
+  /**
+   * SHA-256 hashes of the unused recovery codes: each stands in for one code
+   * from the authenticator, once, when the phone is gone. Issued in a set of
+   * ten when an authenticator is confirmed; a used code leaves the array.
+   */
+  mfaRecoveryCodes: text('mfa_recovery_codes').array().notNull().default(sql`'{}'::text[]`),
 
   /**
    * The TOTP time step (unix seconds / 30) of the last code accepted. A code is
