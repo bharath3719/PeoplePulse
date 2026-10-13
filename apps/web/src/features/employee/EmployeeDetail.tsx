@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { ArrowLeft, Eye, Landmark, Pencil, Trash2 } from 'lucide-react';
+import { ApiError } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { PfStatusBadge, EsiStatusBadge } from '@/components/ui/pf-status-badge';
@@ -11,7 +12,7 @@ export function EmployeeDetail() {
   const { id = '' } = useParams();
   const navigate = useNavigate();
   const remove = useDeleteEmployee(id);
-  const { data: employee, isLoading } = useEmployee(id, !remove.isSuccess);
+  const { data: employee, isLoading, error } = useEmployee(id, !remove.isSuccess);
 
   /**
    * Decryption is a SEPARATE, AUDITED call (TR-52), and it happens only when
@@ -24,6 +25,16 @@ export function EmployeeDetail() {
 
   // Before the loading check: once deleted, the profile is gone from the cache.
   if (remove.data) return <Deleted tier={remove.data.deleted} />;
+  if (error) {
+    return (
+      <div className="py-16 text-center">
+        <p className="font-medium">
+          {error instanceof ApiError && error.status === 404 ? 'No one here by that link.' : 'We couldn’t load this person.'}
+        </p>
+        <Link to="/employees" className="mt-2 inline-block text-sm text-primary hover:underline">Back to People</Link>
+      </div>
+    );
+  }
   if (isLoading || !employee) return <p className="text-muted-foreground">Loading…</p>;
 
   return (

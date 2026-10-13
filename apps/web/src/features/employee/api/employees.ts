@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import type { UpdateEmployeeBankInput } from '@peoplepulse/core';
-import { api } from '@/lib/api';
+import { api, ApiError } from '@/lib/api';
 
 /**
  * Sensitive fields are OPTIONAL in this type — and that is not laziness.
@@ -51,12 +51,17 @@ export function useEmployees(search?: string) {
   });
 }
 
-/** `enabled: false` once the employee is deleted, so the page showing that does not refetch a 404. */
+/**
+ * `enabled: false` once the employee is deleted, so the page showing that does
+ * not refetch a 404. A 404 is not retried: deleted, another company's, or never
+ * there, asking again will not change the answer.
+ */
 export function useEmployee(id: string, enabled = true) {
   return useQuery({
     queryKey: ['employee', id],
     queryFn: () => api.get<Employee>(`/employees/${id}`),
     enabled,
+    retry: (failures, error) => !(error instanceof ApiError && error.status === 404) && failures < 3,
   });
 }
 
