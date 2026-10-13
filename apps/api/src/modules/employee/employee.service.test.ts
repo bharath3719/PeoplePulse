@@ -4,10 +4,10 @@ import {
   BadRequestException, ConflictException, ForbiddenException, NotFoundException,
 } from '@nestjs/common';
 import type { ConfigService } from '@nestjs/config';
-import { and, asc, eq } from 'drizzle-orm';
+import { and, asc, eq, sql } from 'drizzle-orm';
 import {
   getDb, closeDb, withTenant, withPurgeMode, assertRlsEnforced,
-  tenant, employee, employeeEvent, auditLog, department,
+  tenant, employee, employeeEvent, auditLog, department, user, userTenant,
   type Database, type Employee,
 } from '@peoplepulse/db';
 import type { Actor, CreateEmployeeInput, Permission } from '@peoplepulse/core';
@@ -367,5 +367,101 @@ describeIfDb('changing bank details', () => {
     const [entry] = await auditFor(priya, 'UPDATE_BANK');
     expect(JSON.stringify(entry)).not.toContain('501002003004');
     expect(entry!.after).toMatchObject({ bankAccount: '[redacted]', bankIfsc: 'HDFC0001234' });
+  });
+});
+
+/**
+ * Two-tier deletion (D-19). Never paid: the row and its history go — the typo,
+ * the duplicate import. Paid: the person is anonymised and the record stays,
+ * because statutory retention (NFR-08) outlasts the erasure right.
+ */
+describeIfDb('deleting an employee', () => {
+  const DELETER: Permission[] = [...HR, 'employee.delete'];
+
+  it('hard-deletes someone never paid, history and all, and keeps only the code in the audit log', async () => {
+    const typo = await hire(acme, { firstName: 'Pirya' });
+
+    expect(await service.remove(actorIn(acme, DELETER), typo.id)).toEqual({ deleted: 'HARD' });
+
+    const gone = await withTenant(db, acme, (tx) => tx.select().from(employee).where(eq(employee.id, typo.id)));
+    expect(gone).toEqual([]);
+    expect(await eventsFor(typo)).toEqual([]);
+
+    // The audit log outlives the row by years. A name in it would undo the erasure.
+    const [entry] = await auditFor(typo, 'DELETE');
+    expect(entry!.before).toEqual({ empCode: typo.empCode });
+    expect(JSON.stringify(entry)).not.toContain('Pirya');
+  });
+
+  it('anonymises someone who has been paid, keeping what the statutory records reconcile on', async () => {
+    const paid = await hire(acme, { uan: '100200300401', phone: '9876543210', pan: 'ABCDE1234F' });
+    await service.updateBank(actorIn(acme, ['employee.view', 'employee.view.all', 'employee.bank.edit']), paid.id, {
+      bankAccount: '501002003004', bankIfsc: 'HDFC0001234',
+    });
+    vi.spyOn(
+      EmployeeService.prototype as unknown as { hasFinalisedPayroll(): Promise<boolean> },
+      'hasFinalisedPayroll',
+    ).mockResolvedValue(true);
+
+    expect(await service.remove(actorIn(acme, DELETER), paid.id)).toEqual({ deleted: 'ANONYMISED' });
+
+    const after = await reload(paid);
+    expect(after).toMatchObject({
+      firstName: 'Deleted', lastName: 'Employee', phone: null, dateOfBirth: null,
+      panEncrypted: null, panLast4: null, bankAccountEncrypted: null, bankAccountLast4: null,
+      bankIfsc: null, bankName: null, customFields: {},
+      // Kept: PF and ESI filings are reconciled on these.
+      empCode: paid.empCode, uan: '100200300401', joinDate: paid.joinDate, pfStatus: paid.pfStatus,
+    });
+    expect(after.deletedAt).not.toBeNull();
+    expect(after.anonymisedAt).not.toBeNull();
+    expect(await eventsFor(paid)).toHaveLength(1);
+
+    // Gone from every read, and cannot be deleted twice.
+    await expect(service.findOne(actorIn(acme, HR), paid.id)).rejects.toThrow(NotFoundException);
+    await expect(service.remove(actorIn(acme, DELETER), paid.id)).rejects.toThrow(NotFoundException);
+  });
+
+  it('lets go of their reports and of any login linked to them', async () => {
+    const manager = await hire(acme);
+    const report = await hire(acme);
+    await service.update(actorIn(acme, HR), report.id, { managerId: manager.id });
+
+    const [login] = await db.insert(user)
+      .values({ email: `linked-${randomUUID().slice(0, 8)}@example.test`, passwordHash: 'never-used' })
+      .returning({ id: user.id });
+    await db.insert(userTenant).values({ userId: login!.id, tenantId: acme, employeeId: manager.id });
+
+    try {
+      await service.remove(actorIn(acme, DELETER), manager.id);
+
+      // manager_id has no foreign key: left alone, it would point at nobody.
+      expect((await reload(report)).managerId).toBeNull();
+      const [membership] = await db.select().from(userTenant).where(eq(userTenant.userId, login!.id));
+      expect(membership!.employeeId).toBeNull();
+    } finally {
+      await db.delete(user).where(eq(user.id, login!.id));
+    }
+  });
+
+  it('cannot delete another company\'s employee, or one outside the deleter\'s scope', async () => {
+    const theirs = await hire(globex);
+    await expect(service.remove(actorIn(acme, DELETER), theirs.id)).rejects.toThrow(NotFoundException);
+
+    const someone = await hire(acme);
+    const teamOnly = actorIn(acme, ['employee.view', 'employee.delete'], randomUUID());
+    await expect(service.remove(teamOnly, someone.id)).rejects.toThrow(NotFoundException);
+    expect((await reload(someone)).deletedAt).toBeNull();
+  });
+
+  it('still refuses to delete an event directly: only a never-paid employee\'s own erasure may', async () => {
+    const someone = await hire(acme);
+    const [event] = await eventsFor(someone);
+
+    await expect(withTenant(db, acme, async (tx) => {
+      await tx.execute(sql`select set_config('app.erasing_employee', ${randomUUID()}, true)`);
+      await tx.delete(employeeEvent).where(eq(employeeEvent.id, event!.id));
+    })).rejects.toThrow();
+    expect(await eventsFor(someone)).toHaveLength(1);
   });
 });

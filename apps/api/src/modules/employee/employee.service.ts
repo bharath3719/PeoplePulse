@@ -4,7 +4,7 @@ import {
 } from '@nestjs/common';
 import { eq, and, isNull, ilike, or, desc, sql, type SQL } from 'drizzle-orm';
 import {
-  employee, employeeEvent, tenant, location, department, designation, grade, withTenant,
+  employee, employeeEvent, tenant, location, department, designation, grade, userTenant, withTenant,
   type Database, type TenantDatabase, type Employee, type NewEmployee,
 } from '@peoplepulse/db';
 import {
@@ -495,29 +495,43 @@ export class EmployeeService {
    * Two-tier deletion (OPEN.md D-19).
    *
    *   no payroll history  -> hard DELETE. Fixes typos, bad imports, test data.
+   *                          Their event history goes too — the one erasure
+   *                          the immutability trigger allows (policies.sql).
    *   has payroll history -> ANONYMISE. They vanish from every UI, but the
    *                          payslips, PF and TDS records survive — NFR-08
    *                          requires statutory records for >= 8 YEARS, and that
    *                          retention OVERRIDES DPDP's erasure right.
    *
-   * "No payroll history" will mean "never appeared in a FINALISED run" once
-   * payroll exists (Phase 2). Until then nothing has payroll history, so this
-   * hard-deletes — which is correct for now and must be revisited the day
-   * payroll_run_item lands. The guard below is the reminder.
+   * Either way, nothing is left pointing at them: their reports lose their
+   * manager (`manager_id` has no foreign key, so nothing else would notice), and
+   * a login linked to them is unlinked. Scoped and locked like an edit — you
+   * cannot delete someone you cannot see.
+   *
+   * The audit entry carries the employee code and nothing else. It outlives the
+   * row by years; a name in it would undo the erasure.
    */
   async remove(actor: Actor, id: string): Promise<{ deleted: 'HARD' | 'ANONYMISED' }> {
     return withTenant(this.db, actor.tenantId, async (tx) => {
-      const [found] = await tx.select().from(employee).where(eq(employee.id, id));
-      if (!found) throw new NotFoundException('Employee not found');
-
+      const found = await this.findForEdit(tx, actor, id);
       const hasPayrollHistory = await this.hasFinalisedPayroll(id);
 
+      const reports = await tx.update(employee).set({ managerId: null, updatedAt: new Date() })
+        .where(eq(employee.managerId, id))
+        .returning({ id: employee.id });
+      // `user_tenant` sits outside RLS: the tenant filter is what keeps this to ours.
+      await tx.update(userTenant).set({ employeeId: null })
+        .where(and(eq(userTenant.tenantId, actor.tenantId), eq(userTenant.employeeId, id)));
+
       if (hasPayrollHistory) {
+        // Kept: the code, dates, status and statutory identifiers (UAN, ESIC
+        // number, PF/ESI status) that retained filings are reconciled on.
+        // Gone: everything that identifies or reaches the person.
         await tx.update(employee).set({
           deletedAt: new Date(),
           anonymisedAt: new Date(),
           firstName: 'Deleted',
           lastName: 'Employee',
+          dateOfBirth: null,
           personalEmail: null,
           workEmail: null,
           phone: null,
@@ -526,12 +540,18 @@ export class EmployeeService {
           bankAccountEncrypted: null,
           bankAccountLast4: null,
           bankIfsc: null,
+          bankName: null,
+          customFields: {},
+          updatedAt: new Date(),
         }).where(eq(employee.id, id));
 
         await this.audit.record(tx, actor, {
           entity: 'employee', entityId: id, action: 'ANONYMISE',
           before: { empCode: found.empCode },
-          after: { reason: 'has payroll history; statutory retention (NFR-08) overrides erasure' },
+          after: {
+            reason: 'has payroll history; statutory retention (NFR-08) overrides erasure',
+            reportsUnassigned: reports.length,
+          },
         });
 
         return { deleted: 'ANONYMISED' as const };
@@ -539,8 +559,10 @@ export class EmployeeService {
 
       await this.audit.record(tx, actor, {
         entity: 'employee', entityId: id, action: 'DELETE',
-        before: { empCode: found.empCode, name: found.firstName },
+        before: { empCode: found.empCode },
+        ...(reports.length > 0 && { after: { reportsUnassigned: reports.length } }),
       });
+      await tx.execute(sql`select set_config('app.erasing_employee', ${id}, true)`);
       await tx.delete(employee).where(eq(employee.id, id));
 
       return { deleted: 'HARD' as const };

@@ -159,10 +159,24 @@ CREATE TRIGGER audit_log_no_mutation
 --
 -- Note UPDATE is refused even in purge mode. There is no legitimate reason to
 -- REWRITE history — only to erase it wholesale when the company leaves.
+--
+-- One narrower erasure is legitimate: an employee who was NEVER PAID can be
+-- hard-deleted (D-19 — the typo, the duplicate import, the test record), and
+-- their history goes with them. The service names the one employee it is
+-- erasing in `app.erasing_employee`, transaction-local, and only that
+-- employee's events may then go — by the foreign key's cascade, since the app
+-- role holds no DELETE grant on this table.
+--
+-- Someone who HAS been paid is anonymised, never deleted. When payroll_run_item
+-- lands, its foreign key to employee must be ON DELETE RESTRICT, so the
+-- database refuses that delete whatever the service decides.
 
 CREATE OR REPLACE FUNCTION employee_event_is_immutable() RETURNS trigger AS $$
 BEGIN
-  IF is_purge_mode() AND TG_OP = 'DELETE' THEN
+  IF TG_OP = 'DELETE' AND (
+    is_purge_mode()
+    OR OLD.employee_id::text = current_setting('app.erasing_employee', true)
+  ) THEN
     RETURN OLD;
   END IF;
   RAISE EXCEPTION 'employee_event is immutable (CHR-07): correct it with a new event, not a %', TG_OP;

@@ -2,7 +2,7 @@
 
 Cloud HRMS for Indian SMBs (10–200 employees). Core HR, Attendance, Leave, India-statutory Payroll, ATS, Performance, and L&D in one multi-tenant platform.
 
-**Status: Slice 1 is built and runs end to end.** Company signup → login → two-factor authentication → inviting users → managing their access (roles, removal, two-factor reset) → company switcher → employee master (create, list, detail, edit, bank details, Excel import) → org structure → company settings, on an RLS-isolated tenant. 188 tests green.
+**Status: Slice 1 is built and runs end to end.** Company signup → login → two-factor authentication → inviting users → managing their access (roles, removal, two-factor reset) → company switcher → employee master (create, list, detail, edit, bank details, Excel import) → org structure → company settings, on an RLS-isolated tenant. 193 tests green.
 
 ---
 
@@ -54,7 +54,7 @@ Two rules that are not negotiable, because violating either is a compliance defe
 npm install
 cp .env.example .env          # fill in your Postgres password
 npm run db:migrate            # schema + RLS policies + the peoplepulse_app role
-npm test                      # 188 tests, incl. 13 tenant-isolation + 17 employee-edit + 5 switcher + 28 invitation/access + 14 MFA, on a real DB
+npm test                      # 193 tests, incl. 13 tenant-isolation + 22 employee-edit/delete + 5 switcher + 28 invitation/access + 14 MFA, on a real DB
 
 npm run dev:api               # :3000/api/v1
 npm run dev:web               # :5173, proxies /api to the API
@@ -99,6 +99,16 @@ be their own effective-dated actions. Three rules it enforces:
   asks under the tenant context, and refuses reporting loops.
 - **You cannot overwrite what you cannot read**, and bank details are a separate, MFA-gated
   endpoint, so changing where salary goes never rides in under `employee.edit`.
+
+**Deleting an employee is two-tier** ([D-19](docs/decisions/OPEN.md)), behind `employee.delete`
+and a confirmation. Someone never paid is deleted outright, history and all — the typo, the
+duplicate import. Someone who has been paid is anonymised instead: name, contact, PAN and bank
+details go, but the code, dates, UAN, ESIC number and PF/ESI status stay, because statutory
+retention (NFR-08) overrides the erasure right. Either way their reports lose their manager and any
+linked login is unlinked, and the audit entry keeps only the employee code — a name in a log that
+outlives the row by years would undo the erasure. Hard delete used to fail every time: each
+employee's `employee_event` history is immutable, and the cascade hit that trigger. The trigger now
+lets exactly one employee's events go, named by the transaction erasing them.
 
 **One login can serve several companies** ([D-16](docs/decisions/OPEN.md)): the CA firm's
 accountant. `/auth/me` lists every active membership, and the header becomes a company switcher
@@ -173,9 +183,11 @@ belongs to the login, so one company's admin would be switching it off for the o
   prove the invitee owns the address: for a *new* address, whoever holds it chooses the password.
   (It cannot take over an existing login — that needs the login's password.) Email delivery closes
   this without changing the accept flow.
-- **`DELETE /employees/:id` exists, but the two-tier rule is unbuilt** — hard-delete only when there
-  is no payroll history, else anonymise (NFR-08 wants 8-year statutory retention). Nothing in the web
-  app calls it yet.
+- **"Has been paid" is a stub until payroll exists.** Deletion is two-tier (below), but the check
+  that picks the tier returns *never paid* for everyone, because there are no payroll runs yet. The
+  day `payroll_run_item` lands, `hasFinalisedPayroll` must check it — and that table's foreign key to
+  `employee` must be `ON DELETE RESTRICT`, so the database refuses to hard-delete anyone paid even if
+  the service gets it wrong.
 
 ## Why the foundation matters more than it looks
 

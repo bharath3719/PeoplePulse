@@ -1,16 +1,17 @@
 import { useState } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
-import { ArrowLeft, Eye, Landmark, Pencil } from 'lucide-react';
+import { ArrowLeft, Eye, Landmark, Pencil, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { PfStatusBadge, EsiStatusBadge } from '@/components/ui/pf-status-badge';
 import { Can } from '@/features/auth/permissions';
-import { useEmployee, useRevealIdentifiers } from './api/employees';
+import { useDeleteEmployee, useEmployee, useRevealIdentifiers, type Employee } from './api/employees';
 
 export function EmployeeDetail() {
   const { id = '' } = useParams();
   const navigate = useNavigate();
-  const { data: employee, isLoading } = useEmployee(id);
+  const remove = useDeleteEmployee(id);
+  const { data: employee, isLoading } = useEmployee(id, !remove.isSuccess);
 
   /**
    * Decryption is a SEPARATE, AUDITED call (TR-52), and it happens only when
@@ -21,6 +22,8 @@ export function EmployeeDetail() {
   const [revealed, setRevealed] = useState(false);
   const { data: identifiers } = useRevealIdentifiers(id, revealed);
 
+  // Before the loading check: once deleted, the profile is gone from the cache.
+  if (remove.data) return <Deleted tier={remove.data.deleted} />;
   if (isLoading || !employee) return <p className="text-muted-foreground">Loading…</p>;
 
   return (
@@ -104,6 +107,67 @@ export function EmployeeDetail() {
           </CardContent>
         </Card>
       </Can>
+
+      <Can I="employee.delete">
+        <DeleteEmployee employee={employee} remove={remove} />
+      </Can>
+    </div>
+  );
+}
+
+/**
+ * Irreversible either way, so it asks first. What actually happens depends on
+ * whether they have been paid, which the server knows and the page does not —
+ * so the confirmation explains both outcomes.
+ */
+function DeleteEmployee({
+  employee,
+  remove,
+}: {
+  employee: Employee;
+  remove: ReturnType<typeof useDeleteEmployee>;
+}) {
+  const [confirming, setConfirming] = useState(false);
+  const name = `${employee.firstName} ${employee.lastName ?? ''}`.trim();
+
+  return (
+    <section className="space-y-2 border-t pt-6">
+      {confirming ? (
+        <div className="space-y-3 rounded-md bg-destructive/10 px-4 py-3 text-sm">
+          <p className="font-medium">Delete {name}?</p>
+          <p>
+            If they&apos;ve never been paid, their record is deleted completely &mdash; the right
+            choice for a typo or a duplicate import. If they have been paid, their name, contact and
+            bank details are erased, but their payroll records stay for the eight years the law
+            requires. Either way, this can&apos;t be undone.
+          </p>
+          <div className="flex gap-2">
+            <Button size="sm" variant="destructive" disabled={remove.isPending} onClick={() => remove.mutate()}>
+              {remove.isPending ? 'Deleting…' : 'Yes, delete'}
+            </Button>
+            <Button size="sm" variant="ghost" onClick={() => setConfirming(false)}>Cancel</Button>
+          </div>
+        </div>
+      ) : (
+        <Button variant="outline" size="sm" onClick={() => setConfirming(true)}>
+          <Trash2 className="h-4 w-4" /> Delete employee
+        </Button>
+      )}
+      {remove.isError && <p className="text-sm text-destructive">{remove.error.message}</p>}
+    </section>
+  );
+}
+
+function Deleted({ tier }: { tier: 'HARD' | 'ANONYMISED' }) {
+  return (
+    <div className="mx-auto max-w-md space-y-3 py-16 text-center">
+      <p className="font-medium">{tier === 'HARD' ? 'Deleted.' : 'Deleted, and payroll records kept.'}</p>
+      <p className="text-sm text-muted-foreground">
+        {tier === 'HARD'
+          ? 'They had never been paid, so nothing of their record remains.'
+          : 'Their personal details are erased. Their payroll and statutory records are retained, as the law requires.'}
+      </p>
+      <Link to="/employees" className="inline-block text-sm text-primary hover:underline">Back to People</Link>
     </div>
   );
 }

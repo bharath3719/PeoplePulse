@@ -143,10 +143,11 @@ export class EmployeeController {
     return this.employees.revealIdentifiers(actorOrThrow(req), id);
   }
 
+  /** 200 with `{ deleted: 'HARD' | 'ANONYMISED' }`: the two tiers mean different things to HR. */
   @Delete(':id')
   @RequirePermission('employee.delete')
   @HttpCode(200)
-  remove(@Req() req: AuthedRequest, @Param('id') id: string) {
+  remove(@Req() req: AuthedRequest, @Param('id', ParseUUIDPipe) id: string) {
     return this.employees.remove(actorOrThrow(req), id);
   }
 }

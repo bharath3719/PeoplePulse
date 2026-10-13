@@ -51,10 +51,12 @@ export function useEmployees(search?: string) {
   });
 }
 
-export function useEmployee(id: string) {
+/** `enabled: false` once the employee is deleted, so the page showing that does not refetch a 404. */
+export function useEmployee(id: string, enabled = true) {
   return useQuery({
     queryKey: ['employee', id],
     queryFn: () => api.get<Employee>(`/employees/${id}`),
+    enabled,
   });
 }
 
@@ -93,6 +95,23 @@ export function useUpdateEmployeeBank(id: string) {
     mutationFn: (input: UpdateEmployeeBankInput) => api.patch<Employee>(`/employees/${id}/bank`, input),
     onSuccess: (employee) => {
       qc.setQueryData(['employee', id], employee);
+      void qc.invalidateQueries({ queryKey: ['employees'] });
+    },
+  });
+}
+
+/**
+ * Delete an employee. The server picks the tier (D-19): never paid, the record
+ * is gone; paid, it is anonymised and kept for statutory retention.
+ *
+ * The profile is dropped from the cache rather than refetched — it would 404.
+ */
+export function useDeleteEmployee(id: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.delete<{ deleted: 'HARD' | 'ANONYMISED' }>(`/employees/${id}`),
+    onSuccess: () => {
+      qc.removeQueries({ queryKey: ['employee', id] });
       void qc.invalidateQueries({ queryKey: ['employees'] });
     },
   });
