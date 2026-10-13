@@ -40,11 +40,12 @@ export function useGrantableRoles() {
   });
 }
 
+/** Emails the invitee their link. The link never comes back here: only they should hold it. */
 export function useInviteUser() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (input: InviteUserInput) =>
-      api.post<{ invitation: PendingInvitation; token: string }>('/users/invitations', input),
+      api.post<{ invitation: PendingInvitation }>('/users/invitations', input),
     onSuccess: () => void qc.invalidateQueries({ queryKey: ['users'] }),
   });
 }
@@ -82,11 +83,3 @@ export function useResetMemberMfa(userId: string) {
   });
 }
 
-/**
- * The link the inviter sends on. The token rides in the fragment, which the
- * browser never sends to a server and never puts in a Referer header — so it
- * stays out of access logs and out of whatever page the invitee visits next.
- */
-export function invitationLink(token: string): string {
-  return `${window.location.origin}/invite#${token}`;
-}

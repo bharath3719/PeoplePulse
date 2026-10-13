@@ -1,27 +1,20 @@
 import { useState } from 'react';
-import { Check, Copy } from 'lucide-react';
+import { MailCheck } from 'lucide-react';
 import { inviteUserSchema, toIstDate } from '@peoplepulse/core';
 import { ApiError } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Field } from '@/components/ui/field';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
-import { invitationLink, useGrantableRoles, useInviteUser, type PendingInvitation } from './api/users';
+import { useGrantableRoles, useInviteUser, type PendingInvitation } from './api/users';
 
-/**
- * Invite someone, then hand the inviter the link to send.
- *
- * There is no email delivery yet, so the link IS the invitation — and it is
- * shown exactly once, because the server keeps only a hash of it.
- */
+/** Invite someone: they get an email with a link to accept. */
 export function InviteUser({ onDone }: { onDone: () => void }) {
   const roles = useGrantableRoles();
   const invite = useInviteUser();
   const [errors, setErrors] = useState<Record<string, string>>({});
 
-  if (invite.data) {
-    return <InvitationLink invitation={invite.data.invitation} token={invite.data.token} onDone={onDone} />;
-  }
+  if (invite.data) return <InvitationSent invitation={invite.data.invitation} onDone={onDone} />;
 
   function submit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -57,7 +50,7 @@ export function InviteUser({ onDone }: { onDone: () => void }) {
       <CardHeader>
         <CardTitle className="text-base">Invite someone</CardTitle>
         <CardDescription>
-          They get a link to choose a password &mdash; or, if they already use PeoplePulse for
+          They get an email with a link to choose a password &mdash; or, if they already use PeoplePulse for
           another company, to add this one to the login they have.
         </CardDescription>
       </CardHeader>
@@ -94,7 +87,7 @@ export function InviteUser({ onDone }: { onDone: () => void }) {
 
           <div className="flex gap-2">
             <Button type="submit" disabled={invite.isPending}>
-              {invite.isPending ? 'Creating…' : 'Create invitation link'}
+              {invite.isPending ? 'Sending…' : 'Send invitation'}
             </Button>
             <Button type="button" variant="ghost" onClick={onDone}>Cancel</Button>
           </div>
@@ -104,52 +97,25 @@ export function InviteUser({ onDone }: { onDone: () => void }) {
   );
 }
 
-function InvitationLink({
-  invitation,
-  token,
-  onDone,
-}: {
-  invitation: PendingInvitation;
-  token: string;
-  onDone: () => void;
-}) {
-  const link = invitationLink(token);
-  const [copied, setCopied] = useState(false);
-
-  async function copy() {
-    try {
-      await navigator.clipboard.writeText(link);
-      setCopied(true);
-    } catch {
-      // Clipboard refused (permissions, an old browser). The field is selectable.
-      setCopied(false);
-    }
-  }
-
+/**
+ * The link went to their inbox and nowhere else — so accepting proves they can
+ * read that address's mail.
+ */
+function InvitationSent({ invitation, onDone }: { invitation: PendingInvitation; onDone: () => void }) {
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="text-base">Send this link to {invitation.email}</CardTitle>
+        <CardTitle className="flex items-center gap-2 text-base">
+          <MailCheck className="h-4 w-4" />
+          Invitation sent to {invitation.email}
+        </CardTitle>
         <CardDescription>
-          It works once, only for that address, until {toIstDate(new Date(invitation.expiresAt))}.
-          PeoplePulse doesn&rsquo;t email invitations yet, and this is the only time the link is
-          shown &mdash; if it&rsquo;s lost, invite them again and the old one stops working.
+          The link in it works once, only for that address, until{' '}
+          {toIstDate(new Date(invitation.expiresAt))}. If it doesn&rsquo;t arrive, check their spam
+          folder, or invite them again &mdash; the first link then stops working.
         </CardDescription>
       </CardHeader>
-      <CardContent className="space-y-4">
-        <div className="flex gap-2">
-          <Input
-            readOnly
-            value={link}
-            aria-label="Invitation link"
-            onFocus={(e) => e.currentTarget.select()}
-            className="font-mono text-xs"
-          />
-          <Button type="button" variant="outline" onClick={copy}>
-            {copied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
-            {copied ? 'Copied' : 'Copy'}
-          </Button>
-        </div>
+      <CardContent>
         <Button type="button" variant="ghost" onClick={onDone}>Done</Button>
       </CardContent>
     </Card>

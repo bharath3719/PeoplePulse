@@ -2,7 +2,7 @@
 
 Cloud HRMS for Indian SMBs (10–200 employees). Core HR, Attendance, Leave, India-statutory Payroll, ATS, Performance, and L&D in one multi-tenant platform.
 
-**Status: Slice 1 is built and runs end to end.** Company signup → login → two-factor authentication → inviting users → managing their access (roles, removal, two-factor reset) → company switcher → employee master (create, list, detail, edit, bank details, Excel import) → org structure → company settings, on an RLS-isolated tenant. 199 tests green.
+**Status: Slice 1 is built and runs end to end.** Company signup → login → two-factor authentication → inviting users → managing their access (roles, removal, two-factor reset) → company switcher → employee master (create, list, detail, edit, bank details, Excel import) → org structure → company settings, on an RLS-isolated tenant. 204 tests green.
 
 ---
 
@@ -54,11 +54,16 @@ Two rules that are not negotiable, because violating either is a compliance defe
 npm install
 cp .env.example .env          # fill in your Postgres password
 npm run db:migrate            # schema + RLS policies + the peoplepulse_app role
-npm test                      # 199 tests, incl. 13 tenant-isolation + 22 employee-edit/delete + 5 switcher + 28 invitation/access + 18 MFA, on a real DB
+npm test                      # 204 tests, incl. 13 tenant-isolation + 22 employee-edit/delete + 5 switcher + 30 invitation/access + 18 MFA + 3 mail, on a real DB
 
 npm run dev:api               # :3000/api/v1
 npm run dev:web               # :5173, proxies /api to the API
 ```
+
+**Invitation emails go to the API's log in development.** Set `SMTP_URL` (see `.env.example`) to
+send them for real; without it, each one — link included — is printed by `MailService`, so you can
+follow it. The API refuses to start in production without `SMTP_URL`, rather than log links that
+work as credentials.
 
 **The tenant-isolation tests fail — loudly — if they cannot reach a database.** They do not skip.
 A skipped isolation suite prints "13 skipped" in grey, exits 0, and tells you the build is green
@@ -116,10 +121,10 @@ when there is more than one. Switching re-issues the token; the API re-checks me
 and refuses with a 403, not a 401 — the web client reads a 401 on an authenticated request as an
 expired session, so a revoked company would otherwise sign you out of the one you are in.
 
-**Getting someone in is an invitation** (Users, `user.invite`). The inviter picks roles and gets a
-one-time link, valid for 7 days, for one address. Accepting creates a login, or — for an address
-that already has one — attaches it to the company after checking *that login's* password. Three
-rules:
+**Getting someone in is an invitation** (Users, `user.invite`). The inviter picks roles; the
+invitee gets an email with a one-time link, valid for 7 days, for their address only. Accepting
+creates a login, or — for an address that already has one — attaches it to the company after
+checking *that login's* password. Four rules:
 
 - **You can grant only what you hold.** A role is offered, and accepted by the API, only if the
   inviter holds every permission in it (`canGrant`). Otherwise `user.invite` would be a quiet route
@@ -130,6 +135,11 @@ rules:
   secret is stored, and the link puts it in the URL fragment, which never reaches a server log.
 - **One accept per link.** The invitation row is locked for the length of the accept, so a second
   accept waits, then sees the link used.
+- **Only the invitee ever holds the link.** It is emailed and never returned to the inviter or
+  logged (outside development), so accepting proves the invitee reads that address's mail — which
+  is what entitles a new address to choose its own password. The email is sent after the
+  invitation commits; if sending fails, the invitation is revoked and the inviter told, rather than
+  left in the list looking sent.
 
 **Two-factor authentication is gated by what you can do** (NFR-04), not by role name: holding any
 of `MFA_REQUIRED_PERMISSIONS` (bank edit, salary edit, payroll approve/finalize, role and user
@@ -186,10 +196,11 @@ recovery code instead.
   (above), and for anyone who set up two-factor before recovery codes existed and has not made a
   set — the Security page asks them to. Those need someone with database access to clear
   `mfa_enabled_at`, until a support console ([D-18](docs/decisions/OPEN.md)) exists.
-- **Invitations are not emailed.** The inviter copies the link and sends it. So the link does not
-  prove the invitee owns the address: for a *new* address, whoever holds it chooses the password.
-  (It cannot take over an existing login — that needs the login's password.) Email delivery closes
-  this without changing the accept flow.
+- **Nothing limits how many invitations a company sends.** Signup is open and every invitation
+  is an email to an address of the inviter's choosing, carrying a company name they typed: that is
+  a spam relay waiting to be found. Rate-limit invitations per company (and signups per source)
+  before this faces the internet. Which SMTP provider sends them follows the cloud-region decision
+  ([D-6](docs/decisions/OPEN.md)).
 - **"Has been paid" is a stub until payroll exists.** Deletion is two-tier (above), but the check
   that picks the tier returns *never paid* for everyone, because there are no payroll runs yet. The
   day `payroll_run_item` lands, `hasFinalisedPayroll` must check it — and that table's foreign key to

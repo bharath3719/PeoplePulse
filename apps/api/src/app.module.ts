@@ -9,6 +9,7 @@ import { AuthGuard } from './platform/auth/auth.guard';
 import { PermissionGuard } from './platform/rbac/permission.guard';
 import { AuditService } from './platform/audit/audit.service';
 import { PiiService } from './platform/crypto/pii.service';
+import { MailService } from './platform/mail/mail.service';
 
 import { AuthController } from './modules/auth/auth.controller';
 import { TenantService } from './modules/tenant/tenant.service';
@@ -29,7 +30,7 @@ import { UserController } from './modules/user/user.controller';
   ],
   controllers: [AuthController, TenantController, EmployeeController, OrgController, UserController],
   providers: [
-    AuthService, AuditService, PiiService,
+    AuthService, AuditService, PiiService, MailService,
     TenantService, EmployeeService, EmployeeImportService, OrgService, UserService,
 
     /**

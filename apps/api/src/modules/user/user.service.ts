@@ -1,7 +1,9 @@
 import { createHash, randomBytes } from 'node:crypto';
 import {
-  Injectable, Inject, ConflictException, ForbiddenException, GoneException, NotFoundException,
+  Injectable, Inject, Logger, ConflictException, ForbiddenException, GoneException, NotFoundException,
+  ServiceUnavailableException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { and, asc, desc, eq, inArray, isNull, ne } from 'drizzle-orm';
 import { z } from 'zod';
 import * as argon2 from 'argon2';
@@ -16,7 +18,9 @@ import {
 import { DB } from '../../platform/database/database.module';
 import { AuditService } from '../../platform/audit/audit.service';
 import { AuthService } from '../../platform/auth/auth.service';
+import { MailService } from '../../platform/mail/mail.service';
 import { validationFailed } from '../../platform/validation/zod.pipe';
+import { invitationMail } from './invitation-mail';
 
 /** Long enough to survive a weekend and a slow CA firm; short enough to go stale. */
 const INVITATION_TTL_DAYS = 7;
@@ -60,19 +64,26 @@ export interface InvitationPreview {
 /**
  * Who may sign in to a company, and how someone new gets to (D-16).
  *
- * There is no email delivery yet, so inviting returns the link and the inviter
- * sends it. That has one consequence worth stating: the link does not prove the
- * invitee owns the address. It cannot be used to take over an existing login —
- * accepting for an address that already has one requires that login's password
- * — but for a new address, whoever holds the link chooses the password. Email
- * delivery closes that, and needs no change here beyond who sends the link.
+ * An invitation is emailed to the address it names, and the link in it is the
+ * only copy of the token: the inviter never sees it, and no log holds it. So
+ * accepting proves the invitee can read that address's mail — which is what
+ * lets a new address choose its own password. (An address that already has a
+ * login must also give that login's password; the link alone attaches nothing.)
  */
 @Injectable()
 export class UserService {
+  private readonly logger = new Logger(UserService.name);
+  /** Where the web app lives, for the link in the email. */
+  private readonly webOrigin: string;
+
   constructor(
     @Inject(DB) private readonly db: Database,
     private readonly audit: AuditService,
-  ) {}
+    private readonly mail: MailService,
+    config: ConfigService,
+  ) {
+    this.webOrigin = config.get<string>('WEB_ORIGIN', 'http://localhost:5173').replace(/\/+$/, '');
+  }
 
   /** Everyone who can sign in to the actor's company, and everyone asked to. */
   async listAccess(actor: Actor): Promise<{ members: Member[]; invitations: PendingInvitation[] }> {
@@ -123,10 +134,47 @@ export class UserService {
   }
 
   /**
-   * Invite someone, returning the token for the link. Shown once: only its hash
-   * is kept.
+   * Invite someone: record the invitation, then email them the link. Only the
+   * token's hash is kept, and the token itself goes nowhere but that email.
+   *
+   * Sent after the invitation commits, so a link never names a row that rolled
+   * back. If sending fails, the invitation is revoked again and the inviter
+   * told: one nobody received must not sit in the list looking sent.
    */
-  async invite(actor: Actor, input: InviteUserInput): Promise<{ invitation: PendingInvitation; token: string }> {
+  async invite(actor: Actor, input: InviteUserInput): Promise<{ invitation: PendingInvitation }> {
+    const created = await this.createInvitation(actor, input);
+
+    try {
+      await this.mail.send(invitationMail({
+        to: created.invitation.email,
+        companyName: created.companyName,
+        roles: created.invitation.roles.map((r) => r.name),
+        invitedBy: created.invitedBy,
+        link: `${this.webOrigin}/invite#${created.token}`,
+        expiresAt: created.invitation.expiresAt,
+      }));
+    } catch (error) {
+      // The message only: a transport error must not put the link in the log.
+      this.logger.error(`Invitation email to ${created.invitation.email} failed: ${(error as Error).message}`);
+      await withTenant(this.db, actor.tenantId, async (tx) => {
+        await tx.update(userInvitation).set({ revokedAt: new Date() })
+          .where(eq(userInvitation.id, created.invitation.id));
+        await this.audit.record(tx, actor, {
+          entity: 'user_invitation',
+          entityId: created.invitation.id,
+          action: 'REVOKE',
+          after: { email: created.invitation.email, reason: 'the invitation email could not be sent' },
+        });
+      });
+      throw new ServiceUnavailableException(
+        'We couldn’t send the invitation email, so the invitation was cancelled. Try again in a moment.',
+      );
+    }
+
+    return { invitation: created.invitation };
+  }
+
+  private async createInvitation(actor: Actor, input: InviteUserInput) {
     const roleIds = [...new Set(input.roleIds)];
 
     return withTenant(this.db, actor.tenantId, async (tx) => {
@@ -188,9 +236,14 @@ export class UserService {
         },
       });
 
+      const [company] = await tx.select({ name: tenant.name }).from(tenant).where(eq(tenant.id, actor.tenantId));
+      const [inviter] = await tx.select({ email: user.email }).from(user).where(eq(user.id, actor.userId));
+
       return {
         invitation: toPendingView(created!, new Map(roles.map((r) => [r.id, r.name])), now),
         token: `${actor.tenantId}.${secret}`,
+        companyName: company!.name,
+        invitedBy: inviter?.email,
       };
     });
   }

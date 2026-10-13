@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import {
   BadRequestException, ConflictException, ForbiddenException, GoneException, NotFoundException,
-  UnauthorizedException,
+  ServiceUnavailableException, UnauthorizedException,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import type { ConfigService } from '@nestjs/config';
@@ -11,8 +11,11 @@ import {
   getDb, closeDb, withTenant, withPurgeMode, assertRlsEnforced,
   tenant, user, userTenant, userRole, role, userInvitation, auditLog, type Database,
 } from '@peoplepulse/db';
-import { SYSTEM_ROLES, ALL_PERMISSIONS, type Actor, type Permission } from '@peoplepulse/core';
+import {
+  SYSTEM_ROLES, ALL_PERMISSIONS, type Actor, type InviteUserInput, type Permission,
+} from '@peoplepulse/core';
 import { AuditService } from '../../platform/audit/audit.service';
+import type { Mail, MailService } from '../../platform/mail/mail.service';
 import { AuthService } from '../../platform/auth/auth.service';
 import { PiiService } from '../../platform/crypto/pii.service';
 import type { JwtPayload } from '../../platform/auth/authed-request';
@@ -54,6 +57,22 @@ const config = {
 
 const PASSWORD = 'correct horse battery staple';
 const RUN = randomUUID().slice(0, 8);
+
+/**
+ * Every email the service sent, in order. The invitation token now goes
+ * nowhere else, so this is where the tests read it from — as an invitee would.
+ */
+const outbox: Mail[] = [];
+let failNextMail = false;
+const mailer = {
+  send: async (mail: Mail) => {
+    if (failNextMail) {
+      failNextMail = false;
+      throw new Error('451 4.3.0 SMTP relay unavailable');
+    }
+    outbox.push(mail);
+  },
+} as unknown as MailService;
 
 let db: Database;
 let jwt: JwtService;
@@ -117,11 +136,22 @@ async function rejection(attempt: Promise<unknown>): Promise<unknown> {
   return attempt.then(() => { throw new Error('expected a rejection'); }, (e: unknown) => e);
 }
 
+/** Invite, then read the token out of the email it sent: the link's fragment. */
+async function sendInvite(actor: Actor, input: InviteUserInput) {
+  const sent = outbox.length;
+  const { invitation } = await service.invite(actor, input);
+  expect(outbox).toHaveLength(sent + 1);
+  const mail = outbox.at(-1)!;
+  expect(mail.to).toBe(invitation.email);
+  const token = /\/invite#(\S+)/.exec(mail.text)![1]!;
+  return { invitation, token };
+}
+
 /** Someone invited in and accepted, the real way. */
 async function joined(name: string, roleKeys: string[], inviter: Actor = acmeOwner): Promise<string> {
   const address = email(name);
   const roleIds = await Promise.all(roleKeys.map((key) => roleId(inviter.tenantId, key)));
-  const { token } = await service.invite(inviter, { email: address, roleIds });
+  const { token } = await sendInvite(inviter, { email: address, roleIds });
   await service.acceptInvitation(token, PASSWORD);
   return (await userIdFor(address))!;
 }
@@ -155,7 +185,7 @@ beforeAll(async () => {
 
   jwt = new JwtService();
   auth = new AuthService(db, jwt, config, new PiiService(config), new AuditService(db));
-  service = new UserService(db, new AuditService(db));
+  service = new UserService(db, new AuditService(db), mailer, config);
 
   const a = await signUp('Acme Textiles', email('acme-owner'));
   const g = await signUp('Globex Motors', email('globex-owner'));
@@ -188,25 +218,25 @@ describeIfDb('inviting a user', () => {
     expect(offered).not.toContain('Super Admin');
 
     const payroll = await roleId(acme, 'PAYROLL_ADMIN');
-    const refused = await rejection(service.invite(acmeHr, { email: email('escalate'), roleIds: [payroll] }));
+    const refused = await rejection(sendInvite(acmeHr, { email: email('escalate'), roleIds: [payroll] }));
     expect(refused).toBeInstanceOf(ForbiddenException);
   });
 
   it('refuses a role id belonging to another company', async () => {
     const globexManager = await roleId(globex, 'MANAGER');
-    const refused = await rejection(service.invite(acmeOwner, { email: email('foreign-role'), roleIds: [globexManager] }));
+    const refused = await rejection(sendInvite(acmeOwner, { email: email('foreign-role'), roleIds: [globexManager] }));
     expect(refused).toBeInstanceOf(BadRequestException);
   });
 
   it('refuses someone who can already sign in here', async () => {
     const manager = await roleId(acme, 'MANAGER');
-    const refused = await rejection(service.invite(acmeOwner, { email: emails[0]!, roleIds: [manager] }));
+    const refused = await rejection(sendInvite(acmeOwner, { email: emails[0]!, roleIds: [manager] }));
     expect(refused).toBeInstanceOf(ConflictException);
   });
 
   it('creates a login holding exactly the invited roles, signed in to the inviting company', async () => {
     const address = email('new-hr');
-    const { token } = await service.invite(acmeOwner, { email: address, roleIds: [await roleId(acme, 'HR_ADMIN')] });
+    const { token } = await sendInvite(acmeOwner, { email: address, roleIds: [await roleId(acme, 'HR_ADMIN')] });
 
     const preview = await service.previewInvitation(token);
     expect(preview).toMatchObject({ email: address, companyName: 'Acme Textiles', roles: ['HR Admin'], hasAccount: false });
@@ -225,7 +255,7 @@ describeIfDb('inviting a user', () => {
 
   it('is a single-use link', async () => {
     const address = email('once');
-    const { token } = await service.invite(acmeOwner, { email: address, roleIds: [await roleId(acme, 'EMPLOYEE')] });
+    const { token } = await sendInvite(acmeOwner, { email: address, roleIds: [await roleId(acme, 'EMPLOYEE')] });
     await service.acceptInvitation(token, PASSWORD);
 
     expect(await rejection(service.acceptInvitation(token, PASSWORD))).toBeInstanceOf(GoneException);
@@ -234,7 +264,7 @@ describeIfDb('inviting a user', () => {
 
   it('makes a second accept of the same link wait for the first, then refuses it', async () => {
     const address = email('race');
-    const { token, invitation } = await service.invite(acmeOwner, {
+    const { token, invitation } = await sendInvite(acmeOwner, {
       email: address, roleIds: [await roleId(acme, 'EMPLOYEE')],
     });
 
@@ -268,7 +298,7 @@ describeIfDb('inviting a user', () => {
   });
 
   it('finds nothing when the token is presented with another company\'s id', async () => {
-    const { token } = await service.invite(acmeOwner, { email: email('cross'), roleIds: [await roleId(acme, 'EMPLOYEE')] });
+    const { token } = await sendInvite(acmeOwner, { email: email('cross'), roleIds: [await roleId(acme, 'EMPLOYEE')] });
     const secret = token.split('.')[1]!;
 
     // Under Globex's context, Acme's invitation row is invisible to RLS.
@@ -279,8 +309,8 @@ describeIfDb('inviting a user', () => {
 
   it('keeps one live link per address: inviting again kills the old one', async () => {
     const address = email('reinvite');
-    const first = await service.invite(acmeOwner, { email: address, roleIds: [await roleId(acme, 'HR_ADMIN')] });
-    const second = await service.invite(acmeOwner, { email: address, roleIds: [await roleId(acme, 'EMPLOYEE')] });
+    const first = await sendInvite(acmeOwner, { email: address, roleIds: [await roleId(acme, 'HR_ADMIN')] });
+    const second = await sendInvite(acmeOwner, { email: address, roleIds: [await roleId(acme, 'EMPLOYEE')] });
 
     expect(await rejection(service.acceptInvitation(first.token, PASSWORD))).toBeInstanceOf(NotFoundException);
     await service.acceptInvitation(second.token, PASSWORD);
@@ -290,11 +320,11 @@ describeIfDb('inviting a user', () => {
   it('stops working once revoked or expired', async () => {
     const employee = await roleId(acme, 'EMPLOYEE');
 
-    const revoked = await service.invite(acmeOwner, { email: email('revoked'), roleIds: [employee] });
+    const revoked = await sendInvite(acmeOwner, { email: email('revoked'), roleIds: [employee] });
     await service.revokeInvitation(acmeOwner, revoked.invitation.id);
     expect(await rejection(service.acceptInvitation(revoked.token, PASSWORD))).toBeInstanceOf(NotFoundException);
 
-    const expired = await service.invite(acmeOwner, { email: email('expired'), roleIds: [employee] });
+    const expired = await sendInvite(acmeOwner, { email: email('expired'), roleIds: [employee] });
     await withTenant(db, acme, (tx) => tx.update(userInvitation)
       .set({ expiresAt: new Date(Date.now() - 1000) })
       .where(eq(userInvitation.id, expired.invitation.id)));
@@ -303,10 +333,47 @@ describeIfDb('inviting a user', () => {
 
   it('refuses a short password for a new login, and creates nothing', async () => {
     const address = email('weak');
-    const { token } = await service.invite(acmeOwner, { email: address, roleIds: [await roleId(acme, 'EMPLOYEE')] });
+    const { token } = await sendInvite(acmeOwner, { email: address, roleIds: [await roleId(acme, 'EMPLOYEE')] });
 
     expect(await rejection(service.acceptInvitation(token, 'hunter2'))).toBeInstanceOf(BadRequestException);
     expect(await userIdFor(address)).toBeUndefined();
+  });
+});
+
+describeIfDb('the invitation email', () => {
+  it('carries the link to the invitee, and the link goes nowhere else', async () => {
+    const address = email('mailed');
+    const result = await service.invite(acmeOwner, { email: address, roleIds: [await roleId(acme, 'MANAGER')] });
+
+    // Not back to the inviter: holding the link would let them pick the password.
+    expect(result).not.toHaveProperty('token');
+
+    const mail = outbox.at(-1)!;
+    expect(mail.to).toBe(address);
+    expect(mail.subject).toBe('Join Acme Textiles on PeoplePulse');
+    expect(mail.text).toContain(`http://localhost:5173/invite#${acme}.`);
+    expect(mail.text).toContain(emails[0]); // who invited them
+    expect(mail.text).toContain('Manager');
+    expect(mail.html).toContain(`href="http://localhost:5173/invite#${acme}.`);
+
+    const token = /\/invite#(\S+)/.exec(mail.text)![1]!;
+    expect((await service.previewInvitation(token)).email).toBe(address);
+  });
+
+  it('cancels the invitation when the email cannot be sent, so none sits there looking sent', async () => {
+    const address = email('undeliverable');
+    failNextMail = true;
+
+    const refused = await rejection(service.invite(acmeOwner, { email: address, roleIds: [await roleId(acme, 'EMPLOYEE')] }));
+    expect(refused).toBeInstanceOf(ServiceUnavailableException);
+
+    const { invitations } = await service.listAccess(acmeOwner);
+    expect(invitations.map((i) => i.email)).not.toContain(address);
+    const revocations = await withTenant(db, acme, (tx) => tx.select().from(auditLog)
+      .where(and(eq(auditLog.entity, 'user_invitation'), eq(auditLog.action, 'REVOKE'))));
+    expect(revocations.map((r) => r.after)).toContainEqual({
+      email: address, reason: 'the invitation email could not be sent',
+    });
   });
 });
 
@@ -318,7 +385,7 @@ describeIfDb('inviting someone who already has a login (the CA firm)', () => {
     if (!TEST_DB_URL) return;
     // Already an accountant at Globex.
     accountant = email('ca');
-    const { token } = await service.invite(globexOwner, {
+    const { token } = await sendInvite(globexOwner, {
       email: accountant, roleIds: [await roleId(globex, 'ACCOUNTANT')],
     });
     await service.acceptInvitation(token, PASSWORD);
@@ -326,7 +393,7 @@ describeIfDb('inviting someone who already has a login (the CA firm)', () => {
   });
 
   it('will not attach the account without its password', async () => {
-    const { token } = await service.invite(acmeOwner, {
+    const { token } = await sendInvite(acmeOwner, {
       email: accountant, roleIds: [await roleId(acme, 'ACCOUNTANT')],
     });
 
@@ -340,7 +407,7 @@ describeIfDb('inviting someone who already has a login (the CA firm)', () => {
   });
 
   it('attaches it with the password, leaving the other company untouched', async () => {
-    const { token } = await service.invite(acmeOwner, {
+    const { token } = await sendInvite(acmeOwner, {
       email: accountant, roleIds: [await roleId(acme, 'ACCOUNTANT')],
     });
     await service.acceptInvitation(token, PASSWORD);
@@ -364,13 +431,13 @@ describeIfDb('inviting someone who already has a login (the CA firm)', () => {
 describeIfDb('coming back after being removed', () => {
   it('grants what the new invitation says, not what was held before', async () => {
     const address = email('returning');
-    const first = await service.invite(acmeOwner, { email: address, roleIds: [await roleId(acme, 'HR_ADMIN')] });
+    const first = await sendInvite(acmeOwner, { email: address, roleIds: [await roleId(acme, 'HR_ADMIN')] });
     await service.acceptInvitation(first.token, PASSWORD);
     const userId = (await userIdFor(address))!;
 
     await service.remove(acmeOwner, userId);
 
-    const again = await service.invite(acmeOwner, { email: address, roleIds: [await roleId(acme, 'EMPLOYEE')] });
+    const again = await sendInvite(acmeOwner, { email: address, roleIds: [await roleId(acme, 'EMPLOYEE')] });
     await service.acceptInvitation(again.token, PASSWORD);
 
     expect(await rolesHeld(acme, userId)).toEqual(['EMPLOYEE']);
@@ -379,7 +446,7 @@ describeIfDb('coming back after being removed', () => {
 
   it('also clears roles left on file by a membership switched off by hand', async () => {
     const address = email('returning-legacy');
-    const first = await service.invite(acmeOwner, { email: address, roleIds: [await roleId(acme, 'HR_ADMIN')] });
+    const first = await sendInvite(acmeOwner, { email: address, roleIds: [await roleId(acme, 'HR_ADMIN')] });
     await service.acceptInvitation(first.token, PASSWORD);
     const userId = (await userIdFor(address))!;
 
@@ -387,7 +454,7 @@ describeIfDb('coming back after being removed', () => {
     await db.update(userTenant).set({ isActive: false })
       .where(and(eq(userTenant.userId, userId), eq(userTenant.tenantId, acme)));
 
-    const again = await service.invite(acmeOwner, { email: address, roleIds: [await roleId(acme, 'EMPLOYEE')] });
+    const again = await sendInvite(acmeOwner, { email: address, roleIds: [await roleId(acme, 'EMPLOYEE')] });
     await service.acceptInvitation(again.token, PASSWORD);
 
     expect(await rolesHeld(acme, userId)).toEqual(['EMPLOYEE']);
@@ -422,7 +489,7 @@ describeIfDb('removing someone', () => {
 
   it('kills the invitations they sent, so they cannot let themselves back in', async () => {
     const leaver = await joined('leaver-with-link', ['HR_ADMIN']);
-    const backdoor = await service.invite(actingAs(leaver, acme, 'HR_ADMIN'), {
+    const backdoor = await sendInvite(actingAs(leaver, acme, 'HR_ADMIN'), {
       email: email('second-address'), roleIds: [await roleId(acme, 'HR_ADMIN')],
     });
 
@@ -509,8 +576,8 @@ describeIfDb('what an admin may change', () => {
   it('kills the invitations a demoted member could no longer send, and only those', async () => {
     const demoted = await joined('demoted', ['HR_ADMIN']);
     const asDemoted = actingAs(demoted, acme, 'HR_ADMIN');
-    const tooHigh = await service.invite(asDemoted, { email: email('too-high'), roleIds: [await roleId(acme, 'HR_ADMIN')] });
-    const stillFine = await service.invite(asDemoted, { email: email('still-fine'), roleIds: [await roleId(acme, 'EMPLOYEE')] });
+    const tooHigh = await sendInvite(asDemoted, { email: email('too-high'), roleIds: [await roleId(acme, 'HR_ADMIN')] });
+    const stillFine = await sendInvite(asDemoted, { email: email('still-fine'), roleIds: [await roleId(acme, 'EMPLOYEE')] });
 
     await service.updateRoles(acmeOwner, demoted, { roleIds: [await roleId(acme, 'MANAGER')] });
 
@@ -591,9 +658,9 @@ describeIfDb('resetting someone\'s two-factor', () => {
 
   it('refuses a login that also signs in to another company', async () => {
     const address = email('two-companies');
-    const there = await service.invite(globexOwner, { email: address, roleIds: [await roleId(globex, 'PAYROLL_ADMIN')] });
+    const there = await sendInvite(globexOwner, { email: address, roleIds: [await roleId(globex, 'PAYROLL_ADMIN')] });
     await service.acceptInvitation(there.token, PASSWORD);
-    const here = await service.invite(acmeOwner, { email: address, roleIds: [await roleId(acme, 'ACCOUNTANT')] });
+    const here = await sendInvite(acmeOwner, { email: address, roleIds: [await roleId(acme, 'ACCOUNTANT')] });
     await service.acceptInvitation(here.token, PASSWORD);
     const shared = (await userIdFor(address))!;
     await enrol(shared);
@@ -614,8 +681,8 @@ describeIfDb('the access list', () => {
   it('shows this company\'s logins and invitations, and none of another\'s', async () => {
     const pendingHere = email('pending-acme');
     const pendingThere = email('pending-globex');
-    await service.invite(acmeOwner, { email: pendingHere, roleIds: [await roleId(acme, 'EMPLOYEE')] });
-    await service.invite(globexOwner, { email: pendingThere, roleIds: [await roleId(globex, 'EMPLOYEE')] });
+    await sendInvite(acmeOwner, { email: pendingHere, roleIds: [await roleId(acme, 'EMPLOYEE')] });
+    await sendInvite(globexOwner, { email: pendingThere, roleIds: [await roleId(globex, 'EMPLOYEE')] });
 
     const { members, invitations } = await service.listAccess(acmeOwner);
     const memberEmails = members.map((m) => m.email);
