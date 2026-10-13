@@ -2,7 +2,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import {
   Injectable, Inject, ConflictException, ForbiddenException, GoneException, NotFoundException,
 } from '@nestjs/common';
-import { and, asc, desc, eq, inArray, isNull } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNull, ne } from 'drizzle-orm';
 import { z } from 'zod';
 import * as argon2 from 'argon2';
 import {
@@ -11,7 +11,7 @@ import {
 } from '@peoplepulse/db';
 import {
   canGrant, isPermission, newPasswordSchema,
-  type Actor, type InviteUserInput, type Permission,
+  type Actor, type InviteUserInput, type Permission, type UpdateMemberRolesInput,
 } from '@peoplepulse/core';
 import { DB } from '../../platform/database/database.module';
 import { AuditService } from '../../platform/audit/audit.service';
@@ -28,7 +28,16 @@ export interface Member {
   email: string;
   roles: { id: string; name: string }[];
   joinedAt: Date;
+  /** Has an authenticator set up — what resetting two-factor would undo. */
+  mfaEnabled: boolean;
+  /**
+   * The caller could change this member's access, given `user.manage`: someone
+   * other than themselves, who can do nothing the caller cannot.
+   */
+  manageable: boolean;
 }
+
+type RoleWithPermissions = RoleOption & { permissions: Permission[] };
 
 export interface PendingInvitation {
   id: string;
@@ -69,7 +78,7 @@ export class UserService {
   async listAccess(actor: Actor): Promise<{ members: Member[]; invitations: PendingInvitation[] }> {
     return withTenant(this.db, actor.tenantId, async (tx) => {
       const memberRows = await tx.select({
-        userId: user.id, email: user.email, joinedAt: userTenant.createdAt,
+        userId: user.id, email: user.email, joinedAt: userTenant.createdAt, mfaEnabledAt: user.mfaEnabledAt,
       })
         .from(userTenant)
         .innerJoin(user, eq(user.id, userTenant.userId))
@@ -78,23 +87,26 @@ export class UserService {
         .where(and(eq(userTenant.tenantId, actor.tenantId), eq(userTenant.isActive, true)))
         .orderBy(asc(user.email));
 
-      const holdings = await tx.select({ userId: userRole.userId, id: role.id, name: role.name })
-        .from(userRole)
-        .innerJoin(role, eq(role.id, userRole.roleId))
-        .orderBy(asc(role.name));
+      const holdings = await tx.select({ userId: userRole.userId, roleId: userRole.roleId }).from(userRole);
+      const roles = await this.rolesWithPermissions(tx);
 
       const pending = await tx.select().from(userInvitation)
         .where(and(isNull(userInvitation.acceptedAt), isNull(userInvitation.revokedAt)))
         .orderBy(desc(userInvitation.createdAt));
 
-      const roleNames = await this.roleNames(tx);
+      const roleNames = new Map(roles.map((r) => [r.id, r.name]));
       const now = new Date();
 
       return {
-        members: memberRows.map((m) => ({
-          ...m,
-          roles: holdings.filter((h) => h.userId === m.userId).map(({ id, name }) => ({ id, name })),
-        })),
+        members: memberRows.map(({ mfaEnabledAt, ...m }) => {
+          const held = rolesHeldBy(m.userId, holdings, roles);
+          return {
+            ...m,
+            roles: held.map(({ id, name }) => ({ id, name })),
+            mfaEnabled: Boolean(mfaEnabledAt),
+            manageable: m.userId !== actor.userId && canGrant(actor, held.flatMap((r) => r.permissions)),
+          };
+        }),
         invitations: pending.map((i) => toPendingView(i, roleNames, now)),
       };
     });
@@ -305,7 +317,185 @@ export class UserService {
     });
   }
 
-  private async rolesWithPermissions(tx: TenantDatabase) {
+  /**
+   * Replace what a member can do here. Bounded twice: the caller must be able to
+   * do everything the member can now (see `lockForChange`), and everything the
+   * new roles grant — the same `canGrant` rule as inviting, or demoting and
+   * re-promoting would be a way round it.
+   *
+   * Invitations the member sent that grant more than they now hold stop
+   * working. Otherwise demoting someone leaves them a week to accept their own
+   * invitation, sent to a second address, at the old level.
+   */
+  async updateRoles(actor: Actor, userId: string, input: UpdateMemberRolesInput): Promise<void> {
+    const roleIds = [...new Set(input.roleIds)];
+
+    await withTenant(this.db, actor.tenantId, async (tx) => {
+      const { self, member, roles, held } = await this.lockForChange(tx, actor, userId);
+
+      const granting = roles.filter((r) => roleIds.includes(r.id));
+      if (granting.length !== roleIds.length) {
+        // RLS hides other companies' roles, so a foreign id lands here too.
+        throw validationFailed([{ field: 'roleIds', message: 'Unknown role' }]);
+      }
+      if (!granting.every((r) => canGrant(self, r.permissions))) {
+        throw new ForbiddenException('You cannot grant access you do not hold yourself');
+      }
+
+      const before = held.map((r) => r.id).sort();
+      if (before.join() === [...roleIds].sort().join()) return;
+
+      await tx.delete(userRole).where(and(eq(userRole.userId, userId), eq(userRole.tenantId, actor.tenantId)));
+      await tx.insert(userRole).values(granting.map((r) => ({ userId, roleId: r.id, tenantId: actor.tenantId })));
+
+      const nowHolds = new Set(granting.flatMap((r) => r.permissions));
+      const revoked = await revokeInvitationsSentBy(tx, userId, (ids) =>
+        roles.filter((r) => ids.includes(r.id)).every((r) => r.permissions.every((p) => nowHolds.has(p))));
+
+      await this.audit.record(tx, actor, {
+        entity: 'user',
+        entityId: userId,
+        action: 'ROLES_CHANGE',
+        before: { email: member.email, roles: held.map((r) => r.name) },
+        after: { roles: granting.map((r) => r.name), revokedInvitations: revoked },
+      });
+    });
+  }
+
+  /**
+   * Take away someone's access to this company. Their login survives — it may
+   * serve other companies (D-16) — and so does any employee record: this ends
+   * the membership, not the employment.
+   *
+   * Three things go, in one transaction: the membership, every role held here,
+   * and every invitation they sent that is still waiting. The roles go so that
+   * coming back by invitation starts from nothing; the invitations, because a
+   * removed admin must not be able to let themselves back in through a link
+   * they sent before they left. Their current token stops working on its next
+   * request (AuthService.resolveActor).
+   */
+  async remove(actor: Actor, userId: string): Promise<void> {
+    await withTenant(this.db, actor.tenantId, async (tx) => {
+      const { member, held } = await this.lockForChange(tx, actor, userId);
+
+      await tx.update(userTenant).set({ isActive: false })
+        .where(and(eq(userTenant.userId, userId), eq(userTenant.tenantId, actor.tenantId)));
+      await tx.delete(userRole).where(and(eq(userRole.userId, userId), eq(userRole.tenantId, actor.tenantId)));
+      const revoked = await revokeInvitationsSentBy(tx, userId, () => false);
+
+      await this.audit.record(tx, actor, {
+        entity: 'user',
+        entityId: userId,
+        action: 'REMOVE',
+        before: { email: member.email, roles: held.map((r) => r.name) },
+        after: { revokedInvitations: revoked },
+      });
+    });
+  }
+
+  /**
+   * Switch off a member's two-factor authentication, for a lost or replaced
+   * phone. Whoever next signs in with their password is offered setup, so the
+   * person asking should be verified some way other than the password first —
+   * the web form says so.
+   *
+   * Refused for a login that also belongs to another company. The second
+   * factor belongs to the login, not the membership, so a reset here would
+   * strip it from their access there too — on the say-so of an admin that
+   * company never chose. That case needs a support process (D-18).
+   */
+  async resetMfa(actor: Actor, userId: string): Promise<void> {
+    await withTenant(this.db, actor.tenantId, async (tx) => {
+      const { member } = await this.lockForChange(tx, actor, userId);
+      if (!member.mfaEnabledAt) {
+        throw new ConflictException('This person has not set up two-factor authentication');
+      }
+
+      // `user_tenant` sits outside RLS, so this sees every company.
+      const [elsewhere] = await tx.select({ tenantId: userTenant.tenantId }).from(userTenant)
+        .where(and(
+          eq(userTenant.userId, userId),
+          eq(userTenant.isActive, true),
+          ne(userTenant.tenantId, actor.tenantId),
+        ))
+        .limit(1);
+      if (elsewhere) {
+        throw new ConflictException(
+          'This person signs in to another company with the same login, and their two-factor '
+            + 'protects that company too. It cannot be reset from here.',
+        );
+      }
+
+      await tx.update(user).set({
+        mfaSecret: null,
+        mfaEnabledAt: null,
+        mfaLastUsedStep: null,
+        mfaFailedAttempts: 0,
+        mfaLockedUntil: null,
+        updatedAt: new Date(),
+      }).where(eq(user.id, userId));
+
+      await this.audit.record(tx, actor, {
+        entity: 'user', entityId: userId, action: 'MFA_RESET', after: { email: member.email },
+      });
+    });
+  }
+
+  /**
+   * Everything a change to a member's access must establish first, under locks
+   * held to the end of the caller's transaction.
+   *
+   * - Not yourself. Changing your own access here is how the last person who
+   *   can manage access stops being able to. And because a member can be
+   *   changed only by someone who holds everything they hold, the company can
+   *   never lose its last holder of any permission this way.
+   * - A member of THIS company. `user_tenant` sits outside RLS; the tenant
+   *   filter below is all that keeps another company's logins out of reach.
+   * - Holding nothing the caller does not: an HR Admin who cannot see pay must
+   *   not be able to remove the Payroll Admin, or reset their second factor.
+   *
+   * Both memberships are locked, in a fixed order, and the caller's own access
+   * is re-read under the lock rather than taken from the request. Otherwise two
+   * admins removing each other at the same moment both pass on what they each
+   * read, and both go.
+   */
+  private async lockForChange(tx: TenantDatabase, actor: Actor, userId: string) {
+    if (userId === actor.userId) {
+      throw new ForbiddenException('You cannot change your own access. Ask another administrator.');
+    }
+
+    const locked = await tx.select({
+      userId: userTenant.userId, isActive: userTenant.isActive, email: user.email, mfaEnabledAt: user.mfaEnabledAt,
+    })
+      .from(userTenant)
+      .innerJoin(user, eq(user.id, userTenant.userId))
+      .where(and(eq(userTenant.tenantId, actor.tenantId), inArray(userTenant.userId, [actor.userId, userId])))
+      .orderBy(asc(userTenant.userId))
+      .for('update', { of: userTenant });
+
+    if (!locked.find((m) => m.userId === actor.userId)?.isActive) {
+      throw new ForbiddenException('You no longer have access to this company');
+    }
+    const member = locked.find((m) => m.userId === userId && m.isActive);
+    if (!member) throw new NotFoundException('No one with that id can sign in to this company');
+
+    const roles = await this.rolesWithPermissions(tx);
+    const holdings = await tx.select({ userId: userRole.userId, roleId: userRole.roleId }).from(userRole)
+      .where(inArray(userRole.userId, [actor.userId, userId]));
+
+    const self: Actor = {
+      ...actor,
+      permissions: new Set(rolesHeldBy(actor.userId, holdings, roles).flatMap((r) => r.permissions)),
+    };
+    const held = rolesHeldBy(userId, holdings, roles);
+    if (!canGrant(self, held.flatMap((r) => r.permissions))) {
+      throw new ForbiddenException('You cannot change the access of someone who can do things you cannot');
+    }
+
+    return { self, member, roles, held };
+  }
+
+  private async rolesWithPermissions(tx: TenantDatabase): Promise<RoleWithPermissions[]> {
     const roles = await tx.select({ id: role.id, name: role.name, description: role.description })
       .from(role).orderBy(asc(role.name));
     const grants = await tx.select({ roleId: rolePermission.roleId, permission: rolePermission.permission })
@@ -326,6 +516,33 @@ export class UserService {
     const rows = await tx.select({ id: role.id, name: role.name }).from(role);
     return new Map(rows.map((r) => [r.id, r.name]));
   }
+}
+
+function rolesHeldBy(
+  userId: string, holdings: { userId: string; roleId: string }[], roles: RoleWithPermissions[],
+): RoleWithPermissions[] {
+  return roles.filter((r) => holdings.some((h) => h.userId === userId && h.roleId === r.id));
+}
+
+/**
+ * Revoke the still-pending invitations a member sent, except those `keep`
+ * accepts by their role ids. Returns the ids revoked, for the audit entry.
+ */
+async function revokeInvitationsSentBy(
+  tx: TenantDatabase, userId: string, keep: (roleIds: string[]) => boolean,
+): Promise<string[]> {
+  const pending = await tx.select({ id: userInvitation.id, roleIds: userInvitation.roleIds }).from(userInvitation)
+    .where(and(
+      eq(userInvitation.invitedByUserId, userId),
+      isNull(userInvitation.acceptedAt),
+      isNull(userInvitation.revokedAt),
+    ));
+
+  const revoke = pending.filter((i) => !keep(i.roleIds)).map((i) => i.id);
+  if (revoke.length > 0) {
+    await tx.update(userInvitation).set({ revokedAt: new Date() }).where(inArray(userInvitation.id, revoke));
+  }
+  return revoke;
 }
 
 function toPendingView(i: UserInvitation, roleNames: Map<string, string>, now: Date): PendingInvitation {

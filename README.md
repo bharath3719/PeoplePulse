@@ -2,7 +2,7 @@
 
 Cloud HRMS for Indian SMBs (10–200 employees). Core HR, Attendance, Leave, India-statutory Payroll, ATS, Performance, and L&D in one multi-tenant platform.
 
-**Status: Slice 1 is built and runs end to end.** Company signup → login → two-factor authentication → inviting users → company switcher → employee master (create, list, detail, edit, bank details, Excel import) → org structure → company settings, on an RLS-isolated tenant. 173 tests green.
+**Status: Slice 1 is built and runs end to end.** Company signup → login → two-factor authentication → inviting users → managing their access (roles, removal, two-factor reset) → company switcher → employee master (create, list, detail, edit, bank details, Excel import) → org structure → company settings, on an RLS-isolated tenant. 188 tests green.
 
 ---
 
@@ -54,7 +54,7 @@ Two rules that are not negotiable, because violating either is a compliance defe
 npm install
 cp .env.example .env          # fill in your Postgres password
 npm run db:migrate            # schema + RLS policies + the peoplepulse_app role
-npm test                      # 173 tests, incl. 13 tenant-isolation + 17 employee-edit + 5 switcher + 15 invitation + 14 MFA, on a real DB
+npm test                      # 188 tests, incl. 13 tenant-isolation + 17 employee-edit + 5 switcher + 28 invitation/access + 14 MFA, on a real DB
 
 npm run dev:api               # :3000/api/v1
 npm run dev:web               # :5173, proxies /api to the API
@@ -141,19 +141,38 @@ offered in place — on the bank-details page, say — when it is not. Four rule
   counted under a row lock: without it, a burst of parallel guesses all read "0 attempts" and all
   get a try — the test proves this by failing when the lock is removed.
 
+**Changing or ending someone's access is `user.manage`** (Users → Manage), so it needs a verified
+code. An admin can replace a member's roles, reset a lost authenticator, or remove them from the
+company. Removal ends the membership, not the login (it may serve other companies) and not any
+employee record. Four rules:
+
+- **You can change only someone who can do nothing you cannot — and never yourself.** An HR Admin
+  who cannot see pay cannot remove the Payroll Admin or reset their second factor. Together the two
+  halves mean a company can never lose its last holder of any permission this way: removing them
+  takes someone who holds everything they do, and that person is not removing themselves.
+- **A removed user's token dies on its next request.** `resolveActor` now checks the membership
+  (and that the login is enabled) alongside the roles, and answers 401. Removal deletes the roles
+  too, so coming back by invitation starts from nothing.
+- **Leaving does not leave a link behind.** Removal revokes every invitation the person sent that is
+  still pending; a demotion revokes the ones that grant more than they now hold. Otherwise a
+  departing admin has a week to accept their own invitation, sent to a second address.
+- **Two admins removing each other at once leave one.** Both memberships are locked in a fixed
+  order and the caller's own access is re-read under the lock — the test fails without it.
+
+A two-factor reset is refused for a login that also belongs to another company: the second factor
+belongs to the login, so one company's admin would be switching it off for the other's data too.
+
 ### Still open in Slice 1
 
-- **A lost authenticator cannot be reset.** There are no recovery codes, and resetting another
-  user's MFA belongs with `user.manage` — unbuilt (below). Until one of them exists, a Payroll Admin
-  who loses their phone needs someone with database access to clear `mfa_enabled_at`.
+- **Some lost authenticators still cannot be reset.** An admin can reset anyone they could manage
+  (above), but there are no recovery codes, so two cases remain stuck: the company's *only* holder
+  of everything (usually the founder — nobody else can manage them), and a login that belongs to
+  more than one company. Both need someone with database access to clear `mfa_enabled_at`, until
+  recovery codes or a support console ([D-18](docs/decisions/OPEN.md)) exist.
 - **Invitations are not emailed.** The inviter copies the link and sends it. So the link does not
   prove the invitee owns the address: for a *new* address, whoever holds it chooses the password.
   (It cannot take over an existing login — that needs the login's password.) Email delivery closes
   this without changing the accept flow.
-- **Nobody can be removed.** That is `user.manage`, which requires MFA — buildable now that MFA can
-  be set up, but not built. When it is, note that `resolveActor` does not check `user_tenant.is_active` — it loads
-  permissions from `user_role` — so deactivating a membership alone leaves the current access
-  token working until it expires. Removal must also delete the roles, or the check must move.
 - **`DELETE /employees/:id` exists, but the two-tier rule is unbuilt** — hard-delete only when there
   is no payroll history, else anonymise (NFR-08 wants 8-year statutory retention). Nothing in the web
   app calls it yet.

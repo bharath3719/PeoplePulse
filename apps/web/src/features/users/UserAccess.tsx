@@ -4,6 +4,7 @@ import { toIstDate } from '@peoplepulse/core';
 import { Button } from '@/components/ui/button';
 import { usePermissions } from '@/features/auth/permissions';
 import { InviteUser } from './InviteUser';
+import { ManageMember } from './ManageMember';
 import { useAccess, useRevokeInvitation, type RoleRef } from './api/users';
 
 /**
@@ -11,17 +12,21 @@ import { useAccess, useRevokeInvitation, type RoleRef } from './api/users';
  *
  * Logins, not employees: an external accountant appears here and nowhere in
  * People, and most employees will not appear here until they are invited to
- * self-service. Removing someone's access is `user.manage`, which needs MFA,
- * so it waits for the MFA prompt.
+ * self-service. Changing or removing someone's access is `user.manage`, offered
+ * only on the rows the server says are within the admin's reach.
  */
 export function UserAccess() {
-  const { session } = usePermissions();
+  const { session, can } = usePermissions();
   const access = useAccess();
   const revoke = useRevokeInvitation();
   const [inviting, setInviting] = useState(false);
+  const [managingId, setManagingId] = useState<string | null>(null);
 
   const members = access.data?.members ?? [];
   const invitations = access.data?.invitations ?? [];
+  // Looked up afresh on every render, so the panel closes itself when the list
+  // refreshes without them in it.
+  const managing = members.find((m) => m.userId === managingId);
 
   return (
     <div className="mx-auto max-w-4xl space-y-6">
@@ -41,6 +46,8 @@ export function UserAccess() {
       </div>
 
       {inviting && <InviteUser onDone={() => setInviting(false)} />}
+
+      {managing && <ManageMember key={managing.userId} member={managing} onDone={() => setManagingId(null)} />}
 
       {access.isLoading && <p className="text-muted-foreground">Loading…</p>}
 
@@ -77,7 +84,7 @@ export function UserAccess() {
       {access.data && (
         <section className="space-y-2">
           <h2 className="text-sm font-medium text-muted-foreground">Can sign in</h2>
-          <Table head={['Email', 'Access', 'Since']}>
+          <Table head={['Email', 'Access', 'Since', '']}>
             {members.map((m) => (
               <tr key={m.userId} className="border-b last:border-0">
                 <td className="px-4 py-3 font-medium">
@@ -88,6 +95,18 @@ export function UserAccess() {
                 </td>
                 <td className="px-4 py-3"><Roles roles={m.roles} /></td>
                 <td className="tabular px-4 py-3 text-sm">{toIstDate(new Date(m.joinedAt))}</td>
+                <td className="px-4 py-3 text-right">
+                  {can('user.manage') && m.manageable && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      disabled={m.userId === managingId}
+                      onClick={() => setManagingId(m.userId)}
+                    >
+                      Manage
+                    </Button>
+                  )}
+                </td>
               </tr>
             ))}
           </Table>

@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import type { InviteUserInput } from '@peoplepulse/core';
+import type { InviteUserInput, UpdateMemberRolesInput } from '@peoplepulse/core';
 import { api } from '@/lib/api';
 
 export interface RoleRef { id: string; name: string }
@@ -10,6 +10,10 @@ export interface Member {
   email: string;
   roles: RoleRef[];
   joinedAt: string;
+  /** Has an authenticator set up. */
+  mfaEnabled: boolean;
+  /** Someone else, holding nothing you lack — so `user.manage` reaches them. The server re-checks. */
+  manageable: boolean;
 }
 
 export interface PendingInvitation {
@@ -49,6 +53,31 @@ export function useRevokeInvitation() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (id: string) => api.delete<void>(`/users/invitations/${id}`),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['users'] }),
+  });
+}
+
+/** The whole set of roles they will hold. Needs `user.manage`, and so a verified second factor. */
+export function useUpdateMemberRoles(userId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: UpdateMemberRolesInput) => api.put<void>(`/users/${userId}/roles`, input),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['users'] }),
+  });
+}
+
+export function useRemoveMember(userId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.delete<void>(`/users/${userId}`),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['users'] }),
+  });
+}
+
+export function useResetMemberMfa(userId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.delete<void>(`/users/${userId}/mfa`),
     onSuccess: () => void qc.invalidateQueries({ queryKey: ['users'] }),
   });
 }

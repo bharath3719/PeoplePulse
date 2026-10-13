@@ -205,8 +205,8 @@ export class AuthService {
    *
    * Refused once MFA is on. Otherwise a stolen password alone could swap the
    * victim's authenticator for the thief's, and the second factor would be
-   * worth exactly as much as the first. A lost phone is a reset by an admin —
-   * not built yet; see the README.
+   * worth exactly as much as the first. A lost phone is a reset by an admin
+   * holding `user.manage` (UserService.resetMfa), after which this runs again.
    *
    * Starting again before confirming replaces the pending secret, so scanning
    * the QR code twice cannot leave two phones generating valid codes.
@@ -346,10 +346,29 @@ export class AuthService {
    * Resolve the Actor for a request: who, in which company, holding what.
    *
    * Permissions are read from the database EVERY request — see JwtPayload for
-   * why. This is the hot path; it is a two-join query on indexed columns.
+   * why. This is the hot path: a primary-key lookup and a two-join query on
+   * indexed columns, in one transaction.
+   *
+   * The membership is checked as well as the roles. Removing someone deletes
+   * their roles too, but a token must not outlive the membership on the
+   * strength of that alone: a removed user with no roles still reaches every
+   * route that needs no permission, and a disabled login still reaches all of
+   * them. 401, because the token now speaks for nobody — the web client signs
+   * them out, and signing in again lands them in a company they still belong to.
    */
   async resolveActor(payload: JwtPayload): Promise<Actor> {
-    const permissions = await this.loadPermissions(payload.sub, payload.tid);
+    const permissions = await withTenant(this.db, payload.tid, async (tx) => {
+      const [member] = await tx.select({ userId: userTenant.userId }).from(userTenant)
+        .innerJoin(user, eq(user.id, userTenant.userId))
+        .where(and(
+          eq(userTenant.userId, payload.sub),
+          eq(userTenant.tenantId, payload.tid),
+          eq(userTenant.isActive, true),
+          eq(user.isActive, true),
+        ));
+      if (!member) throw new UnauthorizedException();
+      return permissionsIn(tx, payload.sub);
+    });
 
     return {
       userId: payload.sub,
@@ -369,21 +388,8 @@ export class AuthService {
    * several (the CA firm), would be a privilege-escalation bug rather than a
    * mere leak.
    */
-  private async loadPermissions(userId: string, tenantId: string): Promise<ReadonlySet<Permission>> {
-    const rows = await withTenant(this.db, tenantId, (tx) =>
-      tx.select({ permission: rolePermission.permission })
-        .from(userRole)
-        .innerJoin(role, eq(role.id, userRole.roleId))
-        .innerJoin(rolePermission, eq(rolePermission.roleId, role.id))
-        .where(eq(userRole.userId, userId)));
-
-    const permissions = new Set<Permission>();
-    for (const row of rows) {
-      // A permission that is no longer in the registry (removed in a refactor,
-      // say) is IGNORED rather than trusted. Fail closed.
-      if (isPermission(row.permission)) permissions.add(row.permission);
-    }
-    return permissions;
+  private loadPermissions(userId: string, tenantId: string): Promise<ReadonlySet<Permission>> {
+    return withTenant(this.db, tenantId, (tx) => permissionsIn(tx, userId));
   }
 
   private issueTokens(payload: Omit<JwtPayload, 'typ'>): Tokens {
@@ -398,6 +404,23 @@ export class AuthService {
       }),
     };
   }
+}
+
+/** See loadPermissions. `tx` must already be in the company's tenant context. */
+async function permissionsIn(tx: TenantDatabase, userId: string): Promise<ReadonlySet<Permission>> {
+  const rows = await tx.select({ permission: rolePermission.permission })
+    .from(userRole)
+    .innerJoin(role, eq(role.id, userRole.roleId))
+    .innerJoin(rolePermission, eq(rolePermission.roleId, role.id))
+    .where(eq(userRole.userId, userId));
+
+  const permissions = new Set<Permission>();
+  for (const row of rows) {
+    // A permission that is no longer in the registry (removed in a refactor,
+    // say) is IGNORED rather than trusted. Fail closed.
+    if (isPermission(row.permission)) permissions.add(row.permission);
+  }
+  return permissions;
 }
 
 /**

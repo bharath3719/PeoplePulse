@@ -2,10 +2,11 @@ import { randomUUID } from 'node:crypto';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import {
   BadRequestException, ConflictException, ForbiddenException, GoneException, NotFoundException,
+  UnauthorizedException,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import type { ConfigService } from '@nestjs/config';
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, asc, eq, inArray } from 'drizzle-orm';
 import {
   getDb, closeDb, withTenant, withPurgeMode, assertRlsEnforced,
   tenant, user, userTenant, userRole, role, userInvitation, auditLog, type Database,
@@ -114,6 +115,36 @@ async function userIdFor(address: string): Promise<string | undefined> {
 
 async function rejection(attempt: Promise<unknown>): Promise<unknown> {
   return attempt.then(() => { throw new Error('expected a rejection'); }, (e: unknown) => e);
+}
+
+/** Someone invited in and accepted, the real way. */
+async function joined(name: string, roleKeys: string[], inviter: Actor = acmeOwner): Promise<string> {
+  const address = email(name);
+  const roleIds = await Promise.all(roleKeys.map((key) => roleId(inviter.tenantId, key)));
+  const { token } = await service.invite(inviter, { email: address, roleIds });
+  await service.acceptInvitation(token, PASSWORD);
+  return (await userIdFor(address))!;
+}
+
+/** A real member, acting with what those roles grant, past the MFA check. */
+function actingAs(userId: string, tenantId: string, ...roleKeys: string[]): Actor {
+  return {
+    userId, tenantId, employeeId: null, permissions: new Set(roleKeys.flatMap(permissionsOf)), mfaVerified: true,
+  };
+}
+
+/** The access token a member would present: what AuthGuard hands resolveActor. */
+function tokenFor(userId: string, tenantId: string): JwtPayload {
+  return { sub: userId, tid: tenantId, eid: null, mfa: false, typ: 'access' };
+}
+
+async function memberEmails(actor: Actor): Promise<string[]> {
+  return (await service.listAccess(actor)).members.map((m) => m.email);
+}
+
+async function audited(tenantId: string, userId: string, action: string) {
+  return withTenant(db, tenantId, (tx) => tx.select().from(auditLog)
+    .where(and(eq(auditLog.entity, 'user'), eq(auditLog.entityId, userId), eq(auditLog.action, action))));
 }
 
 beforeAll(async () => {
@@ -337,7 +368,22 @@ describeIfDb('coming back after being removed', () => {
     await service.acceptInvitation(first.token, PASSWORD);
     const userId = (await userIdFor(address))!;
 
-    // Removed, the way a revocation leaves things today: membership off, roles still on file.
+    await service.remove(acmeOwner, userId);
+
+    const again = await service.invite(acmeOwner, { email: address, roleIds: [await roleId(acme, 'EMPLOYEE')] });
+    await service.acceptInvitation(again.token, PASSWORD);
+
+    expect(await rolesHeld(acme, userId)).toEqual(['EMPLOYEE']);
+    expect(await auth.resolveActor(tokenFor(userId, acme))).toMatchObject({ userId, tenantId: acme });
+  });
+
+  it('also clears roles left on file by a membership switched off by hand', async () => {
+    const address = email('returning-legacy');
+    const first = await service.invite(acmeOwner, { email: address, roleIds: [await roleId(acme, 'HR_ADMIN')] });
+    await service.acceptInvitation(first.token, PASSWORD);
+    const userId = (await userIdFor(address))!;
+
+    // What removal looked like before it deleted roles: membership off, roles still there.
     await db.update(userTenant).set({ isActive: false })
       .where(and(eq(userTenant.userId, userId), eq(userTenant.tenantId, acme)));
 
@@ -345,6 +391,219 @@ describeIfDb('coming back after being removed', () => {
     await service.acceptInvitation(again.token, PASSWORD);
 
     expect(await rolesHeld(acme, userId)).toEqual(['EMPLOYEE']);
+  });
+});
+
+/**
+ * `user.manage`: changing what someone can do, and ending it.
+ *
+ * The danger is not a stranger — the guard keeps them out — but an admin
+ * reaching past their own access: removing whoever could stop them, promoting a
+ * friend above themselves, leaving a link behind on the way out.
+ */
+describeIfDb('removing someone', () => {
+  it('ends the membership and the roles, and the token they hold stops working', async () => {
+    const leaver = await joined('leaver', ['HR_ADMIN']);
+    expect(await auth.resolveActor(tokenFor(leaver, acme))).toMatchObject({ userId: leaver });
+
+    await service.remove(acmeOwner, leaver);
+
+    expect(await memberEmails(acmeOwner)).not.toContain(emails.at(-1));
+    expect(await rolesHeld(acme, leaver)).toEqual([]);
+    expect(await auth.listTenants(leaver)).toEqual([]);
+    // Not merely "no permissions": routes that need none must refuse too.
+    expect(await rejection(auth.resolveActor(tokenFor(leaver, acme)))).toBeInstanceOf(UnauthorizedException);
+    expect(await rejection(auth.login(emails.at(-1)!, PASSWORD))).toBeInstanceOf(UnauthorizedException);
+
+    const [entry] = await audited(acme, leaver, 'REMOVE');
+    expect(entry!.actorUserId).toBe(acmeOwner.userId);
+    expect(entry!.before).toMatchObject({ roles: ['HR Admin'] });
+  });
+
+  it('kills the invitations they sent, so they cannot let themselves back in', async () => {
+    const leaver = await joined('leaver-with-link', ['HR_ADMIN']);
+    const backdoor = await service.invite(actingAs(leaver, acme, 'HR_ADMIN'), {
+      email: email('second-address'), roleIds: [await roleId(acme, 'HR_ADMIN')],
+    });
+
+    await service.remove(acmeOwner, leaver);
+
+    expect(await rejection(service.acceptInvitation(backdoor.token, PASSWORD))).toBeInstanceOf(NotFoundException);
+    const [entry] = await audited(acme, leaver, 'REMOVE');
+    expect(entry!.after).toEqual({ revokedInvitations: [backdoor.invitation.id] });
+  });
+
+  it('refuses a token for a login that has been disabled', async () => {
+    const disabled = await joined('disabled', ['EMPLOYEE']);
+    await db.update(user).set({ isActive: false }).where(eq(user.id, disabled));
+
+    expect(await rejection(auth.resolveActor(tokenFor(disabled, acme)))).toBeInstanceOf(UnauthorizedException);
+  });
+});
+
+describeIfDb('what an admin may change', () => {
+  let hr: string;
+  let hrActor: Actor;
+
+  beforeAll(async () => {
+    if (!TEST_DB_URL) return;
+    hr = await joined('hr-admin', ['HR_ADMIN']);
+    hrActor = actingAs(hr, acme, 'HR_ADMIN');
+  });
+
+  it('never their own access', async () => {
+    const self = acmeOwner.userId;
+    expect(await rejection(service.remove(acmeOwner, self))).toBeInstanceOf(ForbiddenException);
+    expect(await rejection(service.updateRoles(acmeOwner, self, { roleIds: [await roleId(acme, 'EMPLOYEE')] })))
+      .toBeInstanceOf(ForbiddenException);
+    expect(await rejection(service.resetMfa(acmeOwner, self))).toBeInstanceOf(ForbiddenException);
+    expect(await rolesHeld(acme, self)).toEqual(['SUPER_ADMIN']);
+  });
+
+  it('nobody who can do something they cannot', async () => {
+    const payroll = await joined('payroll-admin', ['PAYROLL_ADMIN']);
+
+    // HR Admin cannot see pay. Removing whoever can, or the owner, is out of reach.
+    expect(await rejection(service.remove(hrActor, payroll))).toBeInstanceOf(ForbiddenException);
+    expect(await rejection(service.remove(hrActor, acmeOwner.userId))).toBeInstanceOf(ForbiddenException);
+    expect(await rejection(service.resetMfa(hrActor, payroll))).toBeInstanceOf(ForbiddenException);
+    expect(await rolesHeld(acme, payroll)).toEqual(['PAYROLL_ADMIN']);
+
+    const { members } = await service.listAccess(hrActor);
+    expect(members.find((m) => m.userId === payroll)!.manageable).toBe(false);
+    expect(members.find((m) => m.userId === hr)!.manageable).toBe(false);
+
+    // A Manager holds nothing HR Admin lacks.
+    const manager = await joined('manager', ['MANAGER']);
+    expect((await service.listAccess(hrActor)).members.find((m) => m.userId === manager)!.manageable).toBe(true);
+    await service.remove(hrActor, manager);
+    expect(await rolesHeld(acme, manager)).toEqual([]);
+  });
+
+  it('no login outside their company', async () => {
+    const foreign = globexOwner.userId;
+    expect(await rejection(service.remove(acmeOwner, foreign))).toBeInstanceOf(NotFoundException);
+    expect(await rejection(service.resetMfa(acmeOwner, foreign))).toBeInstanceOf(NotFoundException);
+    expect(await rejection(service.updateRoles(acmeOwner, foreign, { roleIds: [await roleId(acme, 'EMPLOYEE')] })))
+      .toBeInstanceOf(NotFoundException);
+    expect(await auth.listTenants(foreign)).toHaveLength(1);
+  });
+
+  it('roles only within what they could grant', async () => {
+    const target = await joined('promoted', ['EMPLOYEE']);
+
+    expect(await rejection(service.updateRoles(hrActor, target, { roleIds: [await roleId(acme, 'PAYROLL_ADMIN')] })))
+      .toBeInstanceOf(ForbiddenException);
+    expect(await rejection(service.updateRoles(hrActor, target, { roleIds: [await roleId(globex, 'MANAGER')] })))
+      .toBeInstanceOf(BadRequestException);
+    expect(await rolesHeld(acme, target)).toEqual(['EMPLOYEE']);
+
+    await service.updateRoles(hrActor, target, { roleIds: [await roleId(acme, 'MANAGER')] });
+    expect(await rolesHeld(acme, target)).toEqual(['MANAGER']);
+
+    const [entry] = await audited(acme, target, 'ROLES_CHANGE');
+    expect(entry!.before).toMatchObject({ roles: ['Employee'] });
+    expect(entry!.after).toMatchObject({ roles: ['Manager'], revokedInvitations: [] });
+  });
+
+  it('kills the invitations a demoted member could no longer send, and only those', async () => {
+    const demoted = await joined('demoted', ['HR_ADMIN']);
+    const asDemoted = actingAs(demoted, acme, 'HR_ADMIN');
+    const tooHigh = await service.invite(asDemoted, { email: email('too-high'), roleIds: [await roleId(acme, 'HR_ADMIN')] });
+    const stillFine = await service.invite(asDemoted, { email: email('still-fine'), roleIds: [await roleId(acme, 'EMPLOYEE')] });
+
+    await service.updateRoles(acmeOwner, demoted, { roleIds: [await roleId(acme, 'MANAGER')] });
+
+    expect(await rejection(service.acceptInvitation(tooHigh.token, PASSWORD))).toBeInstanceOf(NotFoundException);
+    await service.acceptInvitation(stillFine.token, PASSWORD);
+  });
+
+  it('re-reads their own access under a lock: two admins removing each other leave one', async () => {
+    const a = await joined('mutual-a', ['HR_ADMIN']);
+    const b = await joined('mutual-b', ['HR_ADMIN']);
+
+    // A removes B, staged by hand so it is caught holding both memberships —
+    // the locks remove() takes — at the moment B tries to remove A.
+    let release!: () => void;
+    let holding!: () => void;
+    const released = new Promise<void>((resolve) => { release = resolve; });
+    const held = new Promise<void>((resolve) => { holding = resolve; });
+
+    const first = withTenant(db, acme, async (tx) => {
+      await tx.select().from(userTenant)
+        .where(and(eq(userTenant.tenantId, acme), inArray(userTenant.userId, [a, b])))
+        .orderBy(asc(userTenant.userId))
+        .for('update');
+      holding();
+      await released;
+      await tx.update(userTenant).set({ isActive: false })
+        .where(and(eq(userTenant.userId, b), eq(userTenant.tenantId, acme)));
+      await tx.delete(userRole).where(and(eq(userRole.userId, b), eq(userRole.tenantId, acme)));
+    });
+
+    await held;
+    // B's request was authorized before A's removal committed, so B's actor
+    // still says HR Admin. Without the lock, B reads A as removable, waits only
+    // at its own UPDATE, and removes A once A commits: nobody is left.
+    const second = service.remove(actingAs(b, acme, 'HR_ADMIN'), a);
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    release();
+    await first;
+
+    expect(await rejection(second)).toBeInstanceOf(ForbiddenException);
+    expect(await rolesHeld(acme, a)).toEqual(['HR_ADMIN']);
+  });
+});
+
+describeIfDb('resetting someone\'s two-factor', () => {
+  async function enrol(userId: string): Promise<void> {
+    await db.update(user).set({
+      mfaSecret: 'encrypted-elsewhere',
+      mfaEnabledAt: new Date(),
+      mfaLastUsedStep: 1,
+      mfaFailedAttempts: 3,
+      mfaLockedUntil: new Date(Date.now() + 60_000),
+    }).where(eq(user.id, userId));
+  }
+
+  it('switches it off, and they can set up a new authenticator', async () => {
+    const lostPhone = await joined('lost-phone', ['PAYROLL_ADMIN']);
+    await enrol(lostPhone);
+
+    await service.resetMfa(acmeOwner, lostPhone);
+
+    const [row] = await db.select().from(user).where(eq(user.id, lostPhone));
+    expect(row).toMatchObject({
+      mfaSecret: null, mfaEnabledAt: null, mfaLastUsedStep: null, mfaFailedAttempts: 0, mfaLockedUntil: null,
+    });
+    expect((await service.listAccess(acmeOwner)).members.find((m) => m.userId === lostPhone)!.mfaEnabled).toBe(false);
+
+    // Enrolment refuses anyone with MFA on; it must now accept them.
+    const enrolment = await auth.startMfaEnrolment(actingAs(lostPhone, acme, 'PAYROLL_ADMIN'));
+    expect(enrolment.secret).toBeTruthy();
+
+    const [entry] = await audited(acme, lostPhone, 'MFA_RESET');
+    expect(entry!.actorUserId).toBe(acmeOwner.userId);
+  });
+
+  it('refuses a login that also signs in to another company', async () => {
+    const address = email('two-companies');
+    const there = await service.invite(globexOwner, { email: address, roleIds: [await roleId(globex, 'PAYROLL_ADMIN')] });
+    await service.acceptInvitation(there.token, PASSWORD);
+    const here = await service.invite(acmeOwner, { email: address, roleIds: [await roleId(acme, 'ACCOUNTANT')] });
+    await service.acceptInvitation(here.token, PASSWORD);
+    const shared = (await userIdFor(address))!;
+    await enrol(shared);
+
+    // Acme's admin would be switching off the factor that guards Globex's payroll.
+    expect(await rejection(service.resetMfa(acmeOwner, shared))).toBeInstanceOf(ConflictException);
+    const [row] = await db.select({ mfaEnabledAt: user.mfaEnabledAt }).from(user).where(eq(user.id, shared));
+    expect(row!.mfaEnabledAt).not.toBeNull();
+  });
+
+  it('refuses when there is nothing to reset', async () => {
+    const never = await joined('never-enrolled', ['EMPLOYEE']);
+    expect(await rejection(service.resetMfa(acmeOwner, never))).toBeInstanceOf(ConflictException);
   });
 });
 

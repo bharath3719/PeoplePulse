@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { inviteUserSchema, newPasswordSchema } from './invitation';
+import { inviteUserSchema, newPasswordSchema, updateMemberRolesSchema } from './invitation';
 
 const ROLE = '7d1f4c1e-3b7a-4f7e-9a51-2a1c0f8e6b11';
 
@@ -20,6 +20,17 @@ describe('inviting a user', () => {
       email: 'ravi@ca-firm.in', roleIds: [ROLE], tenantId: ROLE,
     });
     expect(result.success).toBe(false);
+  });
+});
+
+describe('changing the roles a member holds', () => {
+  it('refuses an empty set: that is a removal, which is its own action', () => {
+    expect(updateMemberRolesSchema.safeParse({ roleIds: [] }).success).toBe(false);
+    expect(updateMemberRolesSchema.safeParse({ roleIds: [ROLE] }).success).toBe(true);
+  });
+
+  it('refuses fields it does not know', () => {
+    expect(updateMemberRolesSchema.safeParse({ roleIds: [ROLE], userId: ROLE }).success).toBe(false);
   });
 });
 

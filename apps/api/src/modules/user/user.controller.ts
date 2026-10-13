@@ -1,7 +1,9 @@
 import {
-  Controller, Get, Post, Delete, Param, Req, HttpCode, ParseUUIDPipe,
+  Controller, Get, Post, Put, Delete, Param, Req, HttpCode, ParseUUIDPipe,
 } from '@nestjs/common';
-import { inviteUserSchema, type InviteUserInput } from '@peoplepulse/core';
+import {
+  inviteUserSchema, updateMemberRolesSchema, type InviteUserInput, type UpdateMemberRolesInput,
+} from '@peoplepulse/core';
 import { RequirePermission } from '../../platform/rbac/require-permission.decorator';
 import { actorOrThrow } from '../../platform/rbac/permission.guard';
 import { ZodBody } from '../../platform/validation/zod.pipe';
@@ -9,13 +11,13 @@ import { UserService } from './user.service';
 import type { AuthedRequest } from '../../platform/auth/authed-request';
 
 /**
- * Inviting people into the active company (D-16).
+ * Who can sign in to the active company (D-16): inviting people in, changing
+ * what they can do, and taking it away.
  *
- * Every route here needs `user.invite`, reads included. `user.manage` would be
- * the obvious gate for the list, but it requires MFA (NFR-04) and nobody can
- * enrol in MFA yet; and whoever adds people needs to see who is already here
- * and what is outstanding. Removing someone's access is `user.manage`'s, and
- * waits for MFA.
+ * Inviting, and the list, need `user.invite` — whoever adds people needs to see
+ * who is already here and what is outstanding. Changing or ending someone's
+ * access needs `user.manage`, which requires a verified second factor (NFR-04);
+ * the guard enforces that from the permission, so nothing here mentions it.
  *
  * Accepting is public and lives under /auth, beside login and signup.
  */
@@ -47,5 +49,33 @@ export class UserController {
   @HttpCode(204)
   async revoke(@Req() req: AuthedRequest, @Param('id', ParseUUIDPipe) id: string) {
     await this.users.revokeInvitation(actorOrThrow(req), id);
+  }
+
+  /** PUT: the body is the whole set of roles they will hold, not a change to it. */
+  @Put(':userId/roles')
+  @RequirePermission('user.manage')
+  @HttpCode(204)
+  async updateRoles(
+    @Req() req: AuthedRequest,
+    @Param('userId', ParseUUIDPipe) userId: string,
+    @ZodBody(updateMemberRolesSchema) input: UpdateMemberRolesInput,
+  ) {
+    await this.users.updateRoles(actorOrThrow(req), userId, input);
+  }
+
+  /** Ends the membership, not the login: it may serve other companies. */
+  @Delete(':userId')
+  @RequirePermission('user.manage')
+  @HttpCode(204)
+  async remove(@Req() req: AuthedRequest, @Param('userId', ParseUUIDPipe) userId: string) {
+    await this.users.remove(actorOrThrow(req), userId);
+  }
+
+  /** For a lost phone. They set up a new authenticator at their next sign-in. */
+  @Delete(':userId/mfa')
+  @RequirePermission('user.manage')
+  @HttpCode(204)
+  async resetMfa(@Req() req: AuthedRequest, @Param('userId', ParseUUIDPipe) userId: string) {
+    await this.users.resetMfa(actorOrThrow(req), userId);
   }
 }

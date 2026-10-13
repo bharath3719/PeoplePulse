@@ -22,3 +22,15 @@ export const inviteUserSchema = z.object({
 }).strict();
 
 export type InviteUserInput = z.infer<typeof inviteUserSchema>;
+
+/**
+ * Replace the roles a member holds in the active company.
+ *
+ * At least one. Access with no roles left is a removal, and removing someone is
+ * its own action — it also ends their membership and the invitations they sent.
+ */
+export const updateMemberRolesSchema = z.object({
+  roleIds: z.array(z.string().uuid()).min(1, 'Pick at least one role — or remove them instead').max(20),
+}).strict();
+
+export type UpdateMemberRolesInput = z.infer<typeof updateMemberRolesSchema>;
