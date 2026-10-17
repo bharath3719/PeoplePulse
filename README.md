@@ -2,7 +2,7 @@
 
 Cloud HRMS for Indian SMBs (10–200 employees). Core HR, Attendance, Leave, India-statutory Payroll, ATS, Performance, and L&D in one multi-tenant platform.
 
-**Status: Slice 1 is built and runs end to end.** Company signup → login → two-factor authentication → inviting users → managing their access (roles, removal, two-factor reset) → company switcher → employee master (create, list, detail, edit, bank details, Excel import) → org structure → company settings, on an RLS-isolated tenant. 204 tests green.
+**Status: Slice 1 is built and runs end to end.** Company signup → login → two-factor authentication → inviting users → managing their access (roles, removal, two-factor reset) → company switcher → employee master (create, list, detail, edit, bank details, Excel import) → org structure → company settings, on an RLS-isolated tenant. 215 tests green.
 
 ---
 
@@ -54,7 +54,7 @@ Two rules that are not negotiable, because violating either is a compliance defe
 npm install
 cp .env.example .env          # fill in your Postgres password
 npm run db:migrate            # schema + RLS policies + the peoplepulse_app role
-npm test                      # 204 tests, incl. 13 tenant-isolation + 22 employee-edit/delete + 5 switcher + 30 invitation/access + 18 MFA + 3 mail, on a real DB
+npm test                      # 215 tests, incl. 13 tenant-isolation + 22 employee-edit/delete + 5 switcher + 33 invitation/access + 21 sign-in/MFA + 3 mail + 5 rate-limit, on a real DB
 
 npm run dev:api               # :3000/api/v1
 npm run dev:web               # :5173, proxies /api to the API
@@ -104,6 +104,15 @@ be their own effective-dated actions. Three rules it enforces:
   asks under the tenant context, and refuses reporting loops.
 - **You cannot overwrite what you cannot read**, and bank details are a separate, MFA-gated
   endpoint, so changing where salary goes never rides in under `employee.edit`.
+
+**The public doors are rate-limited** (TR-40), with every limit named in one place
+(`LIMITS` in `rate-limit.service.ts`): signups per address (each new company can send invitation
+emails), sign-in attempts per address, **wrong passwords per login** — ten in 15 minutes, counted
+for addresses with no login too so a lock never says who exists, and shared with accepting an
+invitation, which also checks a password — and invitations per company per day and per invitee.
+Counts live in Postgres for now, one atomic upsert per hit; TR-40 wants Redis, which arrives with
+the hosting decision, and the service's two methods are all a Redis version has to provide. Behind
+a load balancer set `TRUST_PROXY`, or every customer shares the balancer's address and one budget.
 
 **Deleting an employee is two-tier** ([D-19](docs/decisions/OPEN.md)), behind `employee.delete`
 and a confirmation. Someone never paid is deleted outright, history and all — the typo, the
@@ -196,11 +205,9 @@ recovery code instead.
   (above), and for anyone who set up two-factor before recovery codes existed and has not made a
   set — the Security page asks them to. Those need someone with database access to clear
   `mfa_enabled_at`, until a support console ([D-18](docs/decisions/OPEN.md)) exists.
-- **Nothing limits how many invitations a company sends.** Signup is open and every invitation
-  is an email to an address of the inviter's choosing, carrying a company name they typed: that is
-  a spam relay waiting to be found. Rate-limit invitations per company (and signups per source)
-  before this faces the internet. Which SMTP provider sends them follows the cloud-region decision
-  ([D-6](docs/decisions/OPEN.md)).
+- **Rate limits count in Postgres, not Redis** (TR-40). Fine at one database; swap the store when
+  Redis joins the stack with the hosting decision ([D-6](docs/decisions/OPEN.md)), which also picks
+  the SMTP provider. Signup has no CAPTCHA: five per address per hour slows a script, not a botnet.
 - **"Has been paid" is a stub until payroll exists.** Deletion is two-tier (above), but the check
   that picks the tier returns *never paid* for everyone, because there are no payroll runs yet. The
   day `payroll_run_item` lands, `hasFinalisedPayroll` must check it — and that table's foreign key to

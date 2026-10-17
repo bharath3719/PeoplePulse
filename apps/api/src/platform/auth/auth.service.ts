@@ -19,6 +19,7 @@ import {
 import { DB } from '../database/database.module';
 import { AuditService, type AuditEntry } from '../audit/audit.service';
 import { PiiService } from '../crypto/pii.service';
+import { RateLimitService } from '../rate-limit/rate-limit.service';
 import { validationFailed } from '../validation/zod.pipe';
 import type { JwtPayload } from './authed-request';
 
@@ -89,6 +90,7 @@ export class AuthService {
     private readonly config: ConfigService,
     private readonly pii: PiiService,
     private readonly audit: AuditService,
+    private readonly limits: RateLimitService,
   ) {}
 
   /**
@@ -105,6 +107,12 @@ export class AuthService {
   }
 
   async login(email: string, password: string, tenantId?: string): Promise<LoginResult> {
+    const address = email.toLowerCase().trim();
+
+    // Before the password is looked at: a locked account costs no Argon2 time,
+    // and says the same thing whether or not the address has a login.
+    await this.limits.check('wrongPasswords', address);
+
     /**
      * Login is inherently cross-tenant: we do not know which company this
      * person belongs to until we have found them. `user` and `user_tenant` are
@@ -112,7 +120,7 @@ export class AuthService {
      */
     return withoutTenantIsolation(this.db, 'login: tenant is not yet known', async (db) => {
       const [found] = await db.select().from(user)
-        .where(eq(user.email, email.toLowerCase().trim()));
+        .where(eq(user.email, address));
 
       /**
        * Verify the password even when the user does not exist, against a dummy
@@ -123,6 +131,9 @@ export class AuthService {
       const hash = found?.passwordHash ?? DUMMY_HASH;
       const ok = await argon2.verify(hash, password).catch(() => false);
 
+      // Counted for addresses with no login too: otherwise only real accounts
+      // would ever lock, and the lock would answer "does this person work here".
+      if (!ok) await this.limits.consume('wrongPasswords', address);
       if (!found || !ok || !found.isActive) throw new UnauthorizedException('Invalid credentials');
 
       const memberships = await activeMemberships(db, found.id);

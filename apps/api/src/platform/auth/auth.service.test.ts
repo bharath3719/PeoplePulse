@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import {
   BadRequestException, ConflictException, ForbiddenException, HttpException, HttpStatus,
+  UnauthorizedException,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import type { ConfigService } from '@nestjs/config';
@@ -14,6 +15,7 @@ import {
 import type { Actor } from '@peoplepulse/core';
 import { AuditService } from '../audit/audit.service';
 import { PiiService } from '../crypto/pii.service';
+import { RateLimitService } from '../rate-limit/rate-limit.service';
 import { AuthService } from './auth.service';
 import type { JwtPayload } from './authed-request';
 
@@ -90,7 +92,7 @@ beforeAll(async () => {
 
   jwt = new JwtService();
   pii = new PiiService(config);
-  service = new AuthService(db, jwt, config, pii, new AuditService(db));
+  service = new AuthService(db, jwt, config, pii, new AuditService(db), new RateLimitService(db));
 
   // Created out of name order, so a passing order assertion means sorting
   // happened rather than insertion order leaking through.
@@ -152,6 +154,48 @@ describeIfDb('the company switcher', () => {
   it('refuses a company the user never belonged to', async () => {
     await expect(service.switchTenant(accountant, initech)).rejects.toThrow(ForbiddenException);
     await expect(service.switchTenant(accountant, randomUUID())).rejects.toThrow(ForbiddenException);
+  });
+});
+
+/**
+ * Password guessing at sign-in (TR-40). Argon2 makes each guess slow; this
+ * makes their number small.
+ */
+describeIfDb('wrong passwords', () => {
+  async function rejection(attempt: Promise<unknown>): Promise<unknown> {
+    return attempt.then(() => { throw new Error('expected a rejection'); }, (e: unknown) => e);
+  }
+
+  it('lock sign-in after ten, refusing even the right password', async () => {
+    const email = `guessed-${randomUUID().slice(0, 8)}@example.test`;
+    await login(email);
+
+    for (let i = 0; i < 10; i++) {
+      expect(await rejection(service.login(email, `guess ${i}`))).toBeInstanceOf(UnauthorizedException);
+    }
+    const locked = await rejection(service.login(email, PASSWORD));
+    expect((locked as HttpException).getStatus()).toBe(HttpStatus.TOO_MANY_REQUESTS);
+
+    // However it is typed: the count is per login, not per spelling.
+    const shouted = await rejection(service.login(` ${email.toUpperCase()} `, PASSWORD));
+    expect((shouted as HttpException).getStatus()).toBe(HttpStatus.TOO_MANY_REQUESTS);
+  });
+
+  it('lock an address with no login the same way, so the lock says nothing about who exists', async () => {
+    const nobody = `nobody-${randomUUID().slice(0, 8)}@example.test`;
+    for (let i = 0; i < 10; i++) {
+      expect(await rejection(service.login(nobody, `guess ${i}`))).toBeInstanceOf(UnauthorizedException);
+    }
+    const locked = await rejection(service.login(nobody, PASSWORD));
+    expect((locked as HttpException).getStatus()).toBe(HttpStatus.TOO_MANY_REQUESTS);
+  });
+
+  it('are not counted when the password was right', async () => {
+    const email = `careful-${randomUUID().slice(0, 8)}@example.test`;
+    const id = await login(email);
+    await db.insert(userTenant).values({ userId: id, tenantId: acme });
+
+    for (let i = 0; i < 12; i++) await service.login(email, PASSWORD);
   });
 });
 

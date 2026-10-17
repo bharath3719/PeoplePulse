@@ -29,6 +29,13 @@
       "when": 1791924975982,
       "tag": "0003_breezy_oracle",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1792245618950,
+      "tag": "0004_glorious_gabe_jones",
+      "breakpoints": true
     }
   ]
 }

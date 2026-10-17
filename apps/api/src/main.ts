@@ -1,13 +1,22 @@
 import 'reflect-metadata';
 import { NestFactory } from '@nestjs/core';
+import type { NestExpressApplication } from '@nestjs/platform-express';
 import { Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import helmet from 'helmet';
 import { AppModule } from './app.module';
 
 async function bootstrap(): Promise<void> {
-  const app = await NestFactory.create(AppModule, { bufferLogs: false });
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, { bufferLogs: false });
   const config = app.get(ConfigService);
+
+  // Behind a load balancer every request arrives from the balancer's address,
+  // and the per-address rate limits would throttle all customers as one. Say
+  // how many proxies to trust (`1` for one load balancer) and the client's own
+  // address is read from X-Forwarded-For instead. Never set it when nothing
+  // sits in front: anyone could then claim any address in that header.
+  const trustProxy = config.get<string>('TRUST_PROXY');
+  if (trustProxy) app.set('trust proxy', /^\d+$/.test(trustProxy) ? Number(trustProxy) : trustProxy);
 
   app.setGlobalPrefix('api/v1'); // TR-40
   app.use(helmet());

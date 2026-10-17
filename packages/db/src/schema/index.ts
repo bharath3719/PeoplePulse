@@ -3,3 +3,4 @@ export * from './identity';
 export * from './org';
 export * from './employee';
 export * from './audit';
+export * from './rate-limit';

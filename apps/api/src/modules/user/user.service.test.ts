@@ -2,20 +2,21 @@ import { randomUUID } from 'node:crypto';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import {
   BadRequestException, ConflictException, ForbiddenException, GoneException, NotFoundException,
-  ServiceUnavailableException, UnauthorizedException,
+  ServiceUnavailableException, UnauthorizedException, HttpException, HttpStatus,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import type { ConfigService } from '@nestjs/config';
 import { and, asc, eq, inArray } from 'drizzle-orm';
 import {
   getDb, closeDb, withTenant, withPurgeMode, assertRlsEnforced,
-  tenant, user, userTenant, userRole, role, userInvitation, auditLog, type Database,
+  tenant, user, userTenant, userRole, role, userInvitation, auditLog, rateLimit, type Database,
 } from '@peoplepulse/db';
 import {
   SYSTEM_ROLES, ALL_PERMISSIONS, type Actor, type InviteUserInput, type Permission,
 } from '@peoplepulse/core';
 import { AuditService } from '../../platform/audit/audit.service';
 import type { Mail, MailService } from '../../platform/mail/mail.service';
+import { LIMITS, RateLimitService } from '../../platform/rate-limit/rate-limit.service';
 import { AuthService } from '../../platform/auth/auth.service';
 import { PiiService } from '../../platform/crypto/pii.service';
 import type { JwtPayload } from '../../platform/auth/authed-request';
@@ -184,8 +185,9 @@ beforeAll(async () => {
   await assertRlsEnforced(db);
 
   jwt = new JwtService();
-  auth = new AuthService(db, jwt, config, new PiiService(config), new AuditService(db));
-  service = new UserService(db, new AuditService(db), mailer, config);
+  const limits = new RateLimitService(db);
+  auth = new AuthService(db, jwt, config, new PiiService(config), new AuditService(db), limits);
+  service = new UserService(db, new AuditService(db), mailer, limits, config);
 
   const a = await signUp('Acme Textiles', email('acme-owner'));
   const g = await signUp('Globex Motors', email('globex-owner'));
@@ -377,6 +379,44 @@ describeIfDb('the invitation email', () => {
   });
 });
 
+/**
+ * Every invitation is an email to an address of the inviter's choosing, carrying
+ * a company name they typed. Unlimited, that is a spam relay.
+ */
+describeIfDb('how many invitations', () => {
+  it('stops a fourth invitation to one address in a day', async () => {
+    const address = email('pestered');
+    const employee = await roleId(acme, 'EMPLOYEE');
+    for (let i = 0; i < 3; i++) await sendInvite(acmeOwner, { email: address, roleIds: [employee] });
+
+    const sent = outbox.length;
+    const fourth = await rejection(service.invite(acmeOwner, { email: address, roleIds: [employee] }));
+    expect((fourth as HttpException).getStatus()).toBe(HttpStatus.TOO_MANY_REQUESTS);
+    expect(outbox).toHaveLength(sent);
+  });
+
+  it('stops a company that has used its day\'s invitations, and only that company', async () => {
+    const busy = await signUp('Busy Exports', email('busy-owner'));
+    const busyOwner = { ...actorIn(busy.tenantId, ALL_PERMISSIONS), userId: busy.userId };
+
+    // As if it had already sent its day's worth.
+    const windowMs = LIMITS.invitationsPerCompany.windowSeconds * 1000;
+    await db.insert(rateLimit).values({
+      bucket: 'invitationsPerCompany',
+      key: busy.tenantId,
+      windowStart: new Date(Math.floor(Date.now() / windowMs) * windowMs),
+      hits: LIMITS.invitationsPerCompany.limit,
+    });
+
+    const refused = await rejection(service.invite(busyOwner, {
+      email: email('one-too-many'), roleIds: [await roleId(busy.tenantId, 'EMPLOYEE')],
+    }));
+    expect((refused as HttpException).getStatus()).toBe(HttpStatus.TOO_MANY_REQUESTS);
+
+    await sendInvite(acmeOwner, { email: email('acme-unaffected'), roleIds: [await roleId(acme, 'EMPLOYEE')] });
+  });
+});
+
 describeIfDb('inviting someone who already has a login (the CA firm)', () => {
   let accountant: string;
   let accountantId: string;
@@ -418,6 +458,22 @@ describeIfDb('inviting someone who already has a login (the CA firm)', () => {
 
     const switched = await auth.switchTenant(accountantId, acme);
     expect(switched.activeTenant.id).toBe(acme);
+  });
+
+  it('counts wrong passwords at accept toward the same budget as sign-in', async () => {
+    const victim = email('guessed-at-accept');
+    const there = await sendInvite(globexOwner, { email: victim, roleIds: [await roleId(globex, 'EMPLOYEE')] });
+    await service.acceptInvitation(there.token, PASSWORD);
+    const { token } = await sendInvite(acmeOwner, { email: victim, roleIds: [await roleId(acme, 'EMPLOYEE')] });
+
+    for (let i = 0; i < 10; i++) {
+      expect(await rejection(service.acceptInvitation(token, `guess number ${i}`))).toBeInstanceOf(BadRequestException);
+    }
+    const atAccept = await rejection(service.acceptInvitation(token, PASSWORD));
+    expect((atAccept as HttpException).getStatus()).toBe(HttpStatus.TOO_MANY_REQUESTS);
+    // One budget: guessing here used up sign-in's too.
+    const atSignIn = await rejection(auth.login(victim, PASSWORD));
+    expect((atSignIn as HttpException).getStatus()).toBe(HttpStatus.TOO_MANY_REQUESTS);
   });
 
   it('records the acceptance against the invitee, not the inviter', async () => {

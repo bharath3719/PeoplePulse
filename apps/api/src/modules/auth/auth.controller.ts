@@ -1,8 +1,9 @@
-import { Controller, Post, Get, Req, HttpCode } from '@nestjs/common';
+import { Controller, Post, Get, Req, HttpCode, Ip } from '@nestjs/common';
 import { Public, SkipMfa } from '../../platform/rbac/require-permission.decorator';
 import { actorOrThrow } from '../../platform/rbac/permission.guard';
 import { ZodBody } from '../../platform/validation/zod.pipe';
 import { AuthService } from '../../platform/auth/auth.service';
+import { RateLimitService } from '../../platform/rate-limit/rate-limit.service';
 import { TenantService } from '../tenant/tenant.service';
 import { UserService } from '../user/user.service';
 import {
@@ -21,12 +22,17 @@ export class AuthController {
     private readonly auth: AuthService,
     private readonly tenants: TenantService,
     private readonly users: UserService,
+    private readonly limits: RateLimitService,
   ) {}
 
-  /** Self-serve company signup (TR-02, NFR-09). */
+  /**
+   * Self-serve company signup (TR-02, NFR-09). Limited per address: every new
+   * company can send invitation emails, so an unlimited signup is a spam relay.
+   */
   @Post('signup')
   @Public()
-  async signup(@ZodBody(signupSchema) input: SignupInput) {
+  async signup(@Ip() ip: string, @ZodBody(signupSchema) input: SignupInput) {
+    await this.limits.consume('signup', ip);
     const { tenantId } = await this.tenants.signup(input);
     // Log them straight in — a signup that then asks you to log in is friction
     // in the first 30 seconds of a 30-minute onboarding target.
@@ -50,7 +56,10 @@ export class AuthController {
   @Post('invitations/accept')
   @Public()
   @HttpCode(200)
-  async acceptInvitation(@ZodBody(acceptInvitationSchema) input: { token: string; password: string }) {
+  async acceptInvitation(@Ip() ip: string, @ZodBody(acceptInvitationSchema) input: { token: string; password: string }) {
+    // Accepting for an existing login checks its password: a sign-in, as far as
+    // guessing is concerned.
+    await this.limits.consume('signInFromAddress', ip);
     const { email, tenantId } = await this.users.acceptInvitation(input.token, input.password);
     return this.auth.login(email, input.password, tenantId);
   }
@@ -58,7 +67,8 @@ export class AuthController {
   @Post('login')
   @Public()
   @HttpCode(200)
-  login(@ZodBody(loginSchema) input: LoginInput) {
+  async login(@Ip() ip: string, @ZodBody(loginSchema) input: LoginInput) {
+    await this.limits.consume('signInFromAddress', ip);
     return this.auth.login(input.email, input.password, input.tenantId);
   }
 

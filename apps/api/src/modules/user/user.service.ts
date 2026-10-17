@@ -19,6 +19,7 @@ import { DB } from '../../platform/database/database.module';
 import { AuditService } from '../../platform/audit/audit.service';
 import { AuthService } from '../../platform/auth/auth.service';
 import { MailService } from '../../platform/mail/mail.service';
+import { RateLimitService } from '../../platform/rate-limit/rate-limit.service';
 import { validationFailed } from '../../platform/validation/zod.pipe';
 import { invitationMail } from './invitation-mail';
 
@@ -80,6 +81,7 @@ export class UserService {
     @Inject(DB) private readonly db: Database,
     private readonly audit: AuditService,
     private readonly mail: MailService,
+    private readonly limits: RateLimitService,
     config: ConfigService,
   ) {
     this.webOrigin = config.get<string>('WEB_ORIGIN', 'http://localhost:5173').replace(/\/+$/, '');
@@ -142,6 +144,12 @@ export class UserService {
    * told: one nobody received must not sit in the list looking sent.
    */
   async invite(actor: Actor, input: InviteUserInput): Promise<{ invitation: PendingInvitation }> {
+    // Each invitation is an email to an address of the inviter's choosing,
+    // carrying a company name they typed. Counted before anything else, so a
+    // refused attempt counts too: probing is sending.
+    await this.limits.consume('invitationsPerCompany', actor.tenantId);
+    await this.limits.consume('invitationsPerAddress', `${actor.tenantId}:${input.email}`);
+
     const created = await this.createInvitation(actor, input);
 
     try {
@@ -309,9 +317,12 @@ export class UserService {
       if (account) {
         // Attaching an EXISTING login to a company: prove it is theirs. Without
         // this, inviting someone's address would hand their account to whoever
-        // holds the link.
+        // holds the link. Wrong guesses share sign-in's budget, and are counted
+        // on the limiter's own connection: this transaction rolls back.
+        await this.limits.check('wrongPasswords', account.email);
         const ok = await argon2.verify(account.passwordHash, password).catch(() => false);
         if (!ok) {
+          await this.limits.consume('wrongPasswords', account.email);
           throw validationFailed([{ field: 'password', message: 'That is not the password for this account' }]);
         }
         if (!account.isActive) throw new ForbiddenException('This account has been disabled');
