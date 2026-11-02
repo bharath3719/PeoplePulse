@@ -202,6 +202,67 @@ This is what NFR-08 requires — statutory records held **≥ 8 years** — whil
 
 ---
 
+## 🟠 Raised by Slice 2 — Leave (2-Nov-2026)
+
+Leave was built first of the two Phase 1 modules, for the reasons in [ADR-007](ADR-007-leave-is-a-ledger.md).
+These came up building it. Two are 🔴 because of a date or because the module cannot be used without them.
+
+### D-26 — A login cannot be linked to an employee record 🔴
+
+Nothing in the product sets `user_tenant.employee_id`: signup and invitations both write `null`. So every
+login is "not an employee", and **nobody can apply for leave** — or, later, see their own payslip. The
+leave module was verified with the link set by hand in a dev database.
+
+**Needs deciding:** does an invitation carry the employee it is for (invite from the employee's profile —
+the natural ESS rollout), or does an admin link an existing login (Users → Manage), or both? Either way:
+one login per employee per company, checked in-tenant, audited, and `user.manage`-gated, because linking
+the wrong record shows someone another person's leave today and their salary in Phase 2.
+
+### D-25 — Leave year-end: carry-forward, lapse, encashment (LVE-02) 🔴 **due 31-Dec-2026**
+
+Balances are per calendar year (D-17). With no year-end run, **on 1 January every balance starts at
+zero** — CL lapsing is right, EL lapsing is not. Needs per-type rules (carry-forward cap, lapse,
+encashable days and at what rate) and a run that writes CARRY_FORWARD / LAPSE entries to the ledger.
+Encashment is money, so its rate is a Payroll Admin decision and its payout waits for Phase 2.
+
+### D-20 — How many approval levels? (LVE-03)
+
+LVE-03 says "multi-level (manager → HR)". Built: **one** level — the employee's manager, or anyone with
+company-wide leave access, and never the employee. Multi-level needs ADM-02's workflow configuration
+(levels, delegation, 72h escalation per TR-16). Do pilot SMBs want two levels by default, or one?
+
+### D-21 — Default entitlements vs the Karnataka S&E Act
+
+Signup seeds CL 12 (yearly), SL 12 (yearly), EL 15 (monthly), LOP, and Maternity (calendar days,
+granted by HR). These are common SMB defaults, **not** statutory minimums. The Compliance SME must
+confirm the KA Shops & Commercial Establishments Act minimums before a pilot relies on them — the D-15
+rule: not from memory. Maternity eligibility (80 days worked in 12 months; 26 vs 12 weeks by number of
+children) is not checked; HR grants it per case.
+
+### D-22 — Optional / restricted holidays (LVE-04)
+
+Every holiday is a day off for everyone at its location. "Pick 2 of these 8" needs an employee choice,
+an allowance per year, and a place in the day count. Not built.
+
+### D-23 — Re-pricing leave when holidays or weekly offs change
+
+A request's day count is fixed when it is made. A holiday declared later (Diwali dates move) leaves an
+approved request over-charged by a day; removing one under-charges. Options: re-price open and future
+approved requests on change, with a ledger ADJUSTMENT per person; or only warn HR. Not decided.
+
+### D-24 — Accruals already posted are not recomputed
+
+A corrected join date or a changed entitlement applies to credits posted from then on. Months already
+posted keep their amounts. A recompute would be a ledger ADJUSTMENT per affected person — an explicit
+action, like D-23's, not a silent rewrite.
+
+**Also not in Slice 2, and not decisions so much as work:** HR applying on someone's behalf (for staff
+not yet on ESS); HR cancelling leave that has already started; the team calendar conflict view (LVE-05);
+comp-off (LVE-06, needs attendance); Excel import of opening balances (LVE-08 — one at a time works
+today); and the worker posting accruals on a schedule (the endpoint is idempotent and ready for it).
+
+---
+
 ## ✅ Resolved
 
 | # | Decision | Outcome | Where |
@@ -224,3 +285,4 @@ This is what NFR-08 requires — statutory records held **≥ 8 years** — whil
 | D-2 | RLS + pooler | **`SET LOCAL`** in a per-request transaction. Never session scope. | [ADR-005](ADR-005-data-layer.md) |
 | D-3 | ORM | **Drizzle.** Prove `SET LOCAL` survives the pool in week 1. | [ADR-005](ADR-005-data-layer.md) |
 | D-5 | Auth | **Build** per TR-50 — Argon2id, JWT, TOTP MFA. | [ADR-005](ADR-005-data-layer.md) |
+| — | Phase 1 order; leave model | **Leave before Attendance.** Append-only ledger in **integer hundredths of a day**; debited at approval; half days as sessions. | [ADR-007](ADR-007-leave-is-a-ledger.md) |

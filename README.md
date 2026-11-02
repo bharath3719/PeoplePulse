@@ -2,7 +2,7 @@
 
 Cloud HRMS for Indian SMBs (10–200 employees). Core HR, Attendance, Leave, India-statutory Payroll, ATS, Performance, and L&D in one multi-tenant platform.
 
-**Status: Slice 1 is built and runs end to end.** Company signup → login → two-factor authentication → inviting users → managing their access (roles, removal, two-factor reset) → company switcher → employee master (create, list, detail, edit, bank details, Excel import) → org structure → company settings, on an RLS-isolated tenant. 215 tests green.
+**Status: Slice 1 is built and runs end to end, and Slice 2 — Leave — is built.** Company signup → login → two-factor authentication → inviting users → managing their access (roles, removal, two-factor reset) → company switcher → employee master (create, list, detail, edit, bank details, Excel import) → org structure → company settings, on an RLS-isolated tenant. Then leave: types, holidays, weekly offs, accruals, apply → approve → cancel, on an append-only ledger. 277 tests green.
 
 ---
 
@@ -45,6 +45,7 @@ Two rules that are not negotiable, because violating either is a compliance defe
 - [ADR-004](docs/decisions/ADR-004-statutory-applicability.md) — PF/ESI are **gated by two eligibility checks**, not computed for everyone. Corrects the TRD.
 - [ADR-005](docs/decisions/ADR-005-data-layer.md) — money, RLS-under-pooler, ORM, auth. **Closes the last blockers on Slice 1.**
 - [ADR-006](docs/decisions/ADR-006-rls-requires-an-unprivileged-role.md) — **RLS is worthless if the app connects as a superuser.** Caught a live cross-tenant write.
+- [ADR-007](docs/decisions/ADR-007-leave-is-a-ledger.md) — Leave before Attendance; **a balance is the sum of an append-only ledger, in integer hundredths of a day.**
 - [ENGINEERING-STANDARDS.md](docs/ENGINEERING-STANDARDS.md) — RBAC by permission (never by role), structure, styling, testing.
 - [OPEN.md](docs/decisions/OPEN.md) — **everything still undecided**, grouped by what it blocks. Five items block Slice 1.
 
@@ -54,7 +55,7 @@ Two rules that are not negotiable, because violating either is a compliance defe
 npm install
 cp .env.example .env          # fill in your Postgres password
 npm run db:migrate            # schema + RLS policies + the peoplepulse_app role
-npm test                      # 215 tests, incl. 13 tenant-isolation + 22 employee-edit/delete + 5 switcher + 33 invitation/access + 21 sign-in/MFA + 3 mail + 5 rate-limit, on a real DB
+npm test                      # 277 tests, incl. 15 tenant-isolation + 29 leave + 22 employee-edit/delete + 5 switcher + 33 invitation/access + 21 sign-in/MFA + 3 mail + 5 rate-limit, on a real DB
 
 npm run dev:api               # :3000/api/v1
 npm run dev:web               # :5173, proxies /api to the API
@@ -213,6 +214,57 @@ recovery code instead.
   day `payroll_run_item` lands, `hasFinalisedPayroll` must check it — and that table's foreign key to
   `employee` must be `ON DELETE RESTRICT`, so the database refuses to hard-delete anyone paid even if
   the service gets it wrong.
+
+## Slice 2 — Leave — built
+
+Leave types, holidays, weekly offs, accruals, and apply → approve/reject → cancel (LVE-01, -03, -04,
+-05, -08), behind the `leave.*` permissions that were already in the registry. Leave came first of the
+two Phase 1 modules because Attendance's day derivation reads approved leave, not the other way round
+([ADR-007](docs/decisions/ADR-007-leave-is-a-ledger.md)). Web: **Leave** (your balances, apply, your
+requests), **Approvals**, **Leave policy**, and a leave card on each employee's profile.
+
+**A balance is never stored.** It is the sum of `leave_txn` — opening balances, grants, monthly
+accruals, adjustments, leave taken, leave given back — for one person, type and *calendar* year (D-17).
+The ledger is append-only like `employee_event`: no grant, and a trigger. "Why do I have 4.5 days?" is
+the History button on the profile, line by line, each manual line with its reason.
+
+**Leave is integer hundredths of a day**, for the reason money is integer paise: balances are sums, and
+leave becomes money twice (LOP, encashment). Monthly accruals round *cumulatively*, so a 10-day policy
+credits 0.83, 0.84, 0.83 … and the year comes to exactly 10.00. Half days are sessions — a request runs
+from one half-day session to another — so a morning and an afternoon on one date are two requests, and
+Attendance will know which half was taken.
+
+Six rules:
+
+- **The days are taken at approval, and approval checks again.** A pending request holds its days
+  against new requests; only an approval writes the DEBIT, after re-reading the balance. Every change to
+  one person's leave locks their employee row first — the test fails with the lock removed, three
+  applications spending the same two days — and a unique index means a request is debited at most once
+  even if the service gets it wrong.
+- **Nobody decides their own leave, or adjusts their own balance,** whatever they hold. Approving your
+  own leave is choosing not to be docked pay.
+- **A manager decides for their direct reports**; anyone with `leave.view.all` + `leave.approve` for
+  anyone. Outside your team, a request is a 404, as an employee is.
+- **Working days skip weekly offs and the holidays at the employee's location.** Maternity counts
+  calendar days, because the Act's 26 weeks are calendar weeks. A span cannot cross New Year.
+- **Posting accruals is idempotent and catches up.** "Through October" posts every missing month and
+  nothing twice, so the worker can run it on a schedule later without new code.
+- **The boot check now asks the schema which tables have a `tenant_id`.** A new table that holds
+  company data but was left off the RLS list stops the API from starting, instead of quietly being
+  readable by every company.
+
+### Still open in Slice 2
+
+See [OPEN.md](docs/decisions/OPEN.md) §"Raised by Slice 2". Two are urgent:
+
+- **No login can be linked to an employee yet (D-26)**, so nobody can apply for leave in a real
+  company. Signup and invitations both leave `user_tenant.employee_id` null. This is the next thing to
+  build.
+- **Year-end carry-forward is due by 31 December 2026 (D-25).** Without it every balance, earned leave
+  included, starts 2027 at zero.
+
+Also: one approval level, not LVE-03's two (D-20); default entitlements awaiting the SME (D-21); no
+optional holidays (D-22); a holiday added after a request does not re-price it (D-23).
 
 ## Why the foundation matters more than it looks
 
