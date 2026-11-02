@@ -71,6 +71,10 @@ DECLARE
     'grade',
     'employee',
     'employee_event',
+    'leave_type',
+    'holiday',
+    'leave_request',
+    'leave_txn',
     'audit_log'
   ];
 BEGIN
@@ -186,3 +190,31 @@ DROP TRIGGER IF EXISTS employee_event_no_mutation ON employee_event;
 CREATE TRIGGER employee_event_no_mutation
   BEFORE UPDATE OR DELETE ON employee_event
   FOR EACH ROW EXECUTE FUNCTION employee_event_is_immutable();
+
+-- ---------------------------------------------------------------------------
+-- The leave ledger is append-only too (TR-15)
+-- ---------------------------------------------------------------------------
+--
+-- A balance is the SUM of leave_txn, never a stored number, so the ledger IS
+-- the balance. Rewriting a row would change someone's leave with no trace of
+-- why; a correction is a new ADJUSTMENT entry with its reason.
+--
+-- Erasure follows employee_event exactly: purge mode for account closure, and
+-- the one employee a hard delete names in `app.erasing_employee` (D-19) — their
+-- ledger goes by the foreign key's cascade, along with their requests.
+
+CREATE OR REPLACE FUNCTION leave_txn_is_append_only() RETURNS trigger AS $$
+BEGIN
+  IF TG_OP = 'DELETE' AND (
+    is_purge_mode()
+    OR OLD.employee_id::text = current_setting('app.erasing_employee', true)
+  ) THEN
+    RETURN OLD;
+  END IF;
+  RAISE EXCEPTION 'leave_txn is append-only (TR-15): correct a balance with an ADJUSTMENT, not a %', TG_OP;
+END $$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS leave_txn_no_mutation ON leave_txn;
+CREATE TRIGGER leave_txn_no_mutation
+  BEFORE UPDATE OR DELETE ON leave_txn
+  FOR EACH ROW EXECUTE FUNCTION leave_txn_is_append_only();

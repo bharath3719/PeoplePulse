@@ -6,7 +6,7 @@ import { runMigrations } from '../migrate';
 import { withTenant, withPurgeMode, type Database } from '../client';
 import { assertRlsEnforced } from './assert-enforced';
 import * as schema from '../schema/index';
-import { tenant, employee, location } from '../schema/index';
+import { tenant, employee, location, leaveType, leaveTxn } from '../schema/index';
 
 /**
  * ============================================================================
@@ -345,6 +345,37 @@ describeIfDb('append-only guarantees (NFR-08, CHR-07)', () => {
     ).rejects.toThrow(REFUSED);
   });
 
+  it('refuses to rewrite the leave ledger — a balance is its history (TR-15)', async () => {
+    const [priya] = await withTenant(db, acme, (tx) =>
+      tx.select().from(employee).where(eq(employee.empCode, 'ACME-001')));
+
+    await withTenant(db, acme, async (tx) => {
+      const [cl] = await tx.insert(leaveType)
+        .values({ tenantId: acme, code: 'CL', name: 'Casual Leave' })
+        .returning({ id: leaveType.id });
+      await tx.insert(leaveTxn).values({
+        tenantId: acme, employeeId: priya!.id, leaveTypeId: cl!.id,
+        calendarYear: 2026, kind: 'GRANT', daysHundredths: 1200, accrualPeriod: '2026',
+      });
+    });
+
+    // Turning 12 days into 30 with no entry saying why is exactly what the
+    // ledger exists to make impossible.
+    await expect(
+      withTenant(db, acme, (tx) =>
+        tx.execute(sql`update leave_txn set days_hundredths = 3000 where tenant_id = ${acme}`)),
+    ).rejects.toThrow(REFUSED);
+    await expect(
+      withTenant(db, acme, (tx) => tx.execute(sql`delete from leave_txn where tenant_id = ${acme}`)),
+    ).rejects.toThrow(REFUSED);
+
+    // The owner holds the grants, so this reaches the trigger — the second lock.
+    await expect(
+      withTenant(ownerDb, acme, (tx) =>
+        tx.execute(sql`update leave_txn set days_hundredths = 3000 where tenant_id = ${acme}`)),
+    ).rejects.toThrow(/append-only/);
+  });
+
   it('DOES allow erasure in purge mode — account closure must work (ADM-05)', async () => {
     // Append-only cannot mean immortal. DPDP grants an erasure right, and a
     // departing customer's data must actually go once retention expires.
@@ -363,5 +394,24 @@ describeIfDb('append-only guarantees (NFR-08, CHR-07)', () => {
     const after = (await withTenant(db, acme, (tx) =>
       tx.execute<{ count: string }>(sql`select count(*) as count from audit_log`))).rows[0]!;
     expect(Number(after.count)).toBe(0);
+  });
+});
+
+describeIfDb('the RLS check notices a table it was never told about', () => {
+  /**
+   * The tenant-owned table list is kept by hand, twice. A new table holding
+   * company data but missing from both would pass every other check here —
+   * nothing would be asked about it — while every company could read it. The
+   * boot check now asks the schema which tables carry a tenant_id.
+   */
+  it('refuses to start when a table with a tenant_id is missing from the list', async () => {
+    await ownerDb.execute(sql`drop table if exists zz_unlisted_tenant_data`);
+    await ownerDb.execute(sql`create table zz_unlisted_tenant_data (id uuid primary key, tenant_id uuid not null)`);
+    try {
+      await expect(assertRlsEnforced(db)).rejects.toThrow(/zz_unlisted_tenant_data/);
+    } finally {
+      await ownerDb.execute(sql`drop table zz_unlisted_tenant_data`);
+    }
+    await expect(assertRlsEnforced(db)).resolves.toBeUndefined();
   });
 });

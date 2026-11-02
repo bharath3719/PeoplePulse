@@ -5,6 +5,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import pg from 'pg';
 import { loadRootEnv } from './env';
+import { TENANT_OWNED_TABLES } from './rls/assert-enforced';
 
 /**
  * Applies the schema migration AND the RLS policies, in that order, in one run.
@@ -60,11 +61,7 @@ async function assertRlsIsOn(db: ReturnType<typeof drizzle>): Promise<void> {
     join pg_namespace n on n.oid = c.relnamespace
     where n.nspname = 'public'
       and c.relkind = 'r'
-      and c.relname in (
-        'role','role_permission','user_role','user_invitation',
-        'location','department','designation','grade',
-        'employee','employee_event','audit_log'
-      )
+      and c.relname in (${sql.join(TENANT_OWNED_TABLES.map((t) => sql`${t}`), sql`, `)})
   `);
 
   const broken = result.rows.filter((r) => !r.rls || !r.forced);

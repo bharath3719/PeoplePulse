@@ -1,6 +1,7 @@
 import {
-  pgTable, uuid, text, boolean, date, timestamp, pgEnum, index,
+  pgTable, uuid, text, boolean, date, timestamp, pgEnum, index, smallint,
 } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
 
 export const tenantStatus = pgEnum('tenant_status', ['ACTIVE', 'SUSPENDED', 'CLOSED']);
 
@@ -41,6 +42,15 @@ export const tenant = pgTable('tenant', {
    * restrict — the common SMB choice.
    */
   pfRestrictToCeiling: boolean('pf_restrict_to_ceiling').notNull().default(true),
+
+  /**
+   * Weekly offs, 0 = Sunday .. 6 = Saturday: the days a WORKING_DAYS leave type
+   * does not count. One setting for the whole company until shift rosters
+   * (ATT-04) give each employee their own. Defaults to Sunday, the one weekly
+   * holiday the Shops & Establishments Acts assume; a five-day office adds
+   * Saturday in settings.
+   */
+  weeklyOffDays: smallint('weekly_off_days').array().notNull().default(sql`'{0}'::smallint[]`),
 
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
