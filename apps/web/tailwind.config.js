@@ -60,6 +60,12 @@ export default {
           excluded: 'hsl(var(--status-excluded))',
           notApplicable: 'hsl(var(--status-na))',
         },
+
+        /** Leave request states. Their own names, so a change to PF's colours cannot repaint leave. */
+        leave: {
+          approved: 'hsl(var(--leave-approved))',
+          pending: 'hsl(var(--leave-pending))',
+        },
       },
       borderRadius: {
         lg: 'var(--radius)',

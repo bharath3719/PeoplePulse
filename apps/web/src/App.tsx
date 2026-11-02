@@ -1,5 +1,5 @@
 import { Link, NavLink, Navigate, Route, Routes, useLocation } from 'react-router-dom';
-import { Building2, LogOut, ShieldCheck, Upload, UserCog, Users } from 'lucide-react';
+import { Building2, CalendarCheck, CalendarDays, LogOut, ShieldCheck, Upload, UserCog, Users } from 'lucide-react';
 import { tokenStore } from '@/lib/api';
 import { cn } from '@/lib/utils';
 import { useSession } from '@/features/auth/api/auth';
@@ -16,6 +16,9 @@ import { EmployeeBank } from '@/features/employee/EmployeeBank';
 import { ImportEmployees } from '@/features/import/ImportEmployees';
 import { CompanySettings } from '@/features/org/CompanySettings';
 import { UserAccess } from '@/features/users/UserAccess';
+import { MyLeave } from '@/features/leave/MyLeave';
+import { LeaveApprovals } from '@/features/leave/LeaveApprovals';
+import { LeaveSettings } from '@/features/leave/LeaveSettings';
 
 /**
  * The app shell and the routing table.
@@ -72,6 +75,9 @@ function Gate() {
           <Route path="/import" element={<ImportEmployees />} />
           <Route path="/settings" element={<CompanySettings />} />
           <Route path="/users" element={<UserAccess />} />
+          <Route path="/leave" element={<MyLeave />} />
+          <Route path="/leave/approvals" element={<LeaveApprovals />} />
+          <Route path="/leave/settings" element={<LeaveSettings />} />
           <Route path="/security" element={<Security />} />
 
           {/* Already signed in — the login form has nothing to offer. */}
@@ -101,6 +107,12 @@ function Shell({ children }: { children: React.ReactNode }) {
           <nav className="flex items-center gap-1">
             <Can I="employee.view">
               <NavItem to="/employees" icon={Users}>People</NavItem>
+            </Can>
+            <Can I="leave.apply">
+              <NavItem to="/leave" icon={CalendarDays} end>Leave</NavItem>
+            </Can>
+            <Can I="leave.approve">
+              <NavItem to="/leave/approvals" icon={CalendarCheck}>Approvals</NavItem>
             </Can>
             <Can I="employee.import">
               <NavItem to="/import" icon={Upload}>Import</NavItem>
@@ -165,15 +177,19 @@ function MfaSetupNudge() {
 function NavItem({
   to,
   icon: Icon,
+  end,
   children,
 }: {
   to: string;
   icon: typeof Users;
+  /** Active only on this exact path — so Leave is not lit up while you are on Approvals. */
+  end?: boolean;
   children: React.ReactNode;
 }) {
   return (
     <NavLink
       to={to}
+      end={end ?? false}
       className={({ isActive }) =>
         cn(
           'inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm transition-colors',

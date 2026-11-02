@@ -42,6 +42,10 @@
     --status-member: 142 71% 29%;   /* contributing */
     --status-excluded: 25 85% 45%;  /* company has a scheme; this person is out */
     --status-na: 215 16% 47%;       /* company has no scheme at all */
+
+    /* Leave request states. Rejected uses --destructive, cancelled --muted. */
+    --leave-approved: 142 71% 29%;
+    --leave-pending: 32 90% 40%;
   }
 
   .dark {

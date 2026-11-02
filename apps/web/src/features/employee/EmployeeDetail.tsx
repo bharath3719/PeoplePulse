@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { PfStatusBadge, EsiStatusBadge } from '@/components/ui/pf-status-badge';
 import { Can } from '@/features/auth/permissions';
+import { EmployeeLeave } from '@/features/leave/EmployeeLeave';
 import { useDeleteEmployee, useEmployee, useRevealIdentifiers, type Employee } from './api/employees';
 
 export function EmployeeDetail() {
@@ -117,6 +118,10 @@ export function EmployeeDetail() {
             )}
           </CardContent>
         </Card>
+      </Can>
+
+      <Can any={['leave.view.own', 'leave.view.team', 'leave.view.all']}>
+        <EmployeeLeave employeeId={employee.id} />
       </Can>
 
       <Can I="employee.delete">
