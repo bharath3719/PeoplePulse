@@ -22,6 +22,11 @@ import { OrgService } from './modules/org/org.service';
 import { OrgController } from './modules/org/org.controller';
 import { UserService } from './modules/user/user.service';
 import { UserController } from './modules/user/user.controller';
+import { LeaveService } from './modules/leave/leave.service';
+import { LeaveLedgerService } from './modules/leave/leave-ledger.service';
+import { LeavePolicyService } from './modules/leave/leave-policy.service';
+import { LeaveController } from './modules/leave/leave.controller';
+import { LeavePolicyController } from './modules/leave/leave-policy.controller';
 
 @Module({
   imports: [
@@ -29,10 +34,14 @@ import { UserController } from './modules/user/user.controller';
     JwtModule.register({}),
     DatabaseModule,
   ],
-  controllers: [AuthController, TenantController, EmployeeController, OrgController, UserController],
+  controllers: [
+    AuthController, TenantController, EmployeeController, OrgController, UserController,
+    LeaveController, LeavePolicyController,
+  ],
   providers: [
     AuthService, AuditService, PiiService, MailService, RateLimitService,
     TenantService, EmployeeService, EmployeeImportService, OrgService, UserService,
+    LeaveService, LeaveLedgerService, LeavePolicyService,
 
     /**
      * Both guards are GLOBAL, and the order matters.

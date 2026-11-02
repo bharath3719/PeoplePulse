@@ -1,13 +1,14 @@
 import { Injectable, Inject, ConflictException } from '@nestjs/common';
 import { eq, sql } from 'drizzle-orm';
 import {
-  tenant, user, userTenant, role, rolePermission, userRole,
+  tenant, user, userTenant, role, rolePermission, userRole, leaveType,
   withoutTenantIsolation, withTenant, type Database,
 } from '@peoplepulse/db';
 import { SYSTEM_ROLES, OWNER_ROLE_KEY, type Actor } from '@peoplepulse/core';
 import { DB } from '../../platform/database/database.module';
 import { AuthService } from '../../platform/auth/auth.service';
 import { AuditService } from '../../platform/audit/audit.service';
+import { defaultLeaveTypeRows } from '../leave/leave-policy.service';
 
 export interface SignupInput {
   companyName: string;
@@ -118,6 +119,9 @@ export class TenantService {
         // the source tree for exactly that and fails the build.
         const owner = seeded.find((s) => s.key === OWNER_ROLE_KEY)!;
         await tx.insert(userRole).values({ tenantId, userId, roleId: owner.id });
+
+        // The standard leave types, as data HR edits (TR-02) — like the roles.
+        await tx.insert(leaveType).values(defaultLeaveTypeRows(tenantId, userId));
 
         return { tenantId, userId };
       });
