@@ -43,6 +43,13 @@
       "when": 1793621525420,
       "tag": "0005_dashing_jetstream",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1793649698538,
+      "tag": "0006_real_tarot",
+      "breakpoints": true
     }
   ]
 }

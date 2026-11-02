@@ -9,7 +9,8 @@ import type { ConfigService } from '@nestjs/config';
 import { and, asc, eq, inArray } from 'drizzle-orm';
 import {
   getDb, closeDb, withTenant, withPurgeMode, assertRlsEnforced,
-  tenant, user, userTenant, userRole, role, userInvitation, auditLog, rateLimit, type Database,
+  tenant, user, userTenant, userRole, role, rolePermission, userInvitation, auditLog, rateLimit, employee,
+  type Database,
 } from '@peoplepulse/db';
 import {
   SYSTEM_ROLES, ALL_PERMISSIONS, type Actor, type InviteUserInput, type Permission,
@@ -749,5 +750,186 @@ describeIfDb('the access list', () => {
     expect(invitedEmails).toContain(pendingHere);
     expect(invitedEmails).not.toContain(pendingThere);
     expect(members.find((m) => m.email === emails[0])!.roles.map((r) => r.name)).toEqual(['Super Admin']);
+  });
+});
+
+/**
+ * Signing in AS an employee (D-26).
+ *
+ * A link makes a login's "own" scopes mean one person: their leave today,
+ * their payslips in Phase 2. So each test below tries to point a login at
+ * somebody through a door that should be shut — an admin who cannot see pay,
+ * an employee who already has a login, another company's employee, a role
+ * change after the fact, a token that remembers a link that is gone.
+ */
+describeIfDb('signing in as an employee', () => {
+  async function anEmployee(tenantId: string, firstName = 'Priya'): Promise<string> {
+    return withTenant(db, tenantId, async (tx) => {
+      const [row] = await tx.insert(employee).values({
+        tenantId, empCode: `E-${randomUUID().slice(0, 8)}`, firstName, joinDate: '2026-01-01',
+      }).returning({ id: employee.id });
+      return row!.id;
+    });
+  }
+
+  /** `user_tenant` sits outside RLS, so this reads it directly. */
+  async function linkOf(userId: string): Promise<string | null | undefined> {
+    const [row] = await db.select({ employeeId: userTenant.employeeId }).from(userTenant)
+      .where(and(eq(userTenant.userId, userId), eq(userTenant.tenantId, acme)));
+    return row?.employeeId;
+  }
+
+  async function code(attempt: Promise<unknown>): Promise<{ status: number; fields?: string[] }> {
+    const error = await rejection(attempt);
+    if (!(error instanceof HttpException)) throw new Error(`expected an HTTP refusal, got ${String(error)}`);
+    const body = error.getResponse() as { errors?: { field: string }[] };
+    return { status: error.getStatus(), ...(body.errors && { fields: body.errors.map((e) => e.field) }) };
+  }
+
+  /** A custom role holding only org.view: a login it opens nothing of anyone through. */
+  async function orgViewerRole(): Promise<string> {
+    return withTenant(db, acme, async (tx) => {
+      const [created] = await tx.insert(role)
+        .values({ tenantId: acme, key: `ORG_VIEWER_${RUN}`, name: 'Org viewer' })
+        .returning({ id: role.id });
+      await tx.insert(rolePermission).values({ tenantId: acme, roleId: created!.id, permission: 'org.view' });
+      return created!.id;
+    });
+  }
+
+  it('links the login to the employee its invitation names, and the next request speaks for them', async () => {
+    const priya = await anEmployee(acme);
+    const address = email('linked-by-invite');
+    const { token } = await sendInvite(acmeOwner, {
+      email: address, roleIds: [await roleId(acme, 'EMPLOYEE')], employeeId: priya,
+    });
+    await service.acceptInvitation(token, PASSWORD);
+    const userId = (await userIdFor(address))!;
+
+    expect(await linkOf(userId)).toBe(priya);
+    // The token was issued with no employee; the membership is what counts.
+    expect((await auth.resolveActor(tokenFor(userId, acme))).employeeId).toBe(priya);
+
+    const listed = (await service.employeeLogins(acmeOwner)).find((e) => e.id === priya);
+    expect(listed).toMatchObject({ login: address, invitedAs: null });
+    const member = (await service.listAccess(acmeOwner)).members.find((m) => m.userId === userId);
+    expect(member!.employee).toMatchObject({ id: priya, name: 'Priya' });
+  });
+
+  it('will not let an admin who cannot see pay link a login — the founder\'s payslip would be one inbox away', async () => {
+    const founder = await anEmployee(acme, 'Asha');
+    const employeeRole = await roleId(acme, 'EMPLOYEE');
+
+    expect(await code(service.invite(acmeHr, {
+      email: email('hr-second-inbox'), roleIds: [employeeRole], employeeId: founder,
+    }))).toMatchObject({ status: 403 });
+
+    // The same invitation without the link is ordinary HR work.
+    await sendInvite(acmeHr, { email: email('hr-plain-invite'), roleIds: [employeeRole] });
+  });
+
+  it('refuses an employee who already signs in, and another company\'s employee', async () => {
+    const priya = await anEmployee(acme);
+    const employeeRole = await roleId(acme, 'EMPLOYEE');
+    const first = await sendInvite(acmeOwner, { email: email('priya-first'), roleIds: [employeeRole], employeeId: priya });
+    await service.acceptInvitation(first.token, PASSWORD);
+
+    expect(await code(service.invite(acmeOwner, {
+      email: email('priya-second'), roleIds: [employeeRole], employeeId: priya,
+    }))).toMatchObject({ status: 409, fields: ['employeeId'] });
+
+    // The foreign key would take Globex's id — Postgres checks it without RLS.
+    const kabir = await anEmployee(globex, 'Kabir');
+    expect(await code(service.invite(acmeOwner, {
+      email: email('kabir-into-acme'), roleIds: [employeeRole], employeeId: kabir,
+    }))).toMatchObject({ status: 400, fields: ['employeeId'] });
+  });
+
+  it('checks the employee again at accept: one anonymised in the meantime links nobody', async () => {
+    const priya = await anEmployee(acme);
+    const address = email('late-accept');
+    const { token } = await sendInvite(acmeOwner, {
+      email: address, roleIds: [await roleId(acme, 'EMPLOYEE')], employeeId: priya,
+    });
+    await withTenant(db, acme, (tx) => tx.update(employee).set({ deletedAt: new Date() }).where(eq(employee.id, priya)));
+
+    expect(await rejection(service.acceptInvitation(token, PASSWORD))).toBeInstanceOf(GoneException);
+    expect(await userIdFor(address)).toBeUndefined();
+  });
+
+  it('links and unlinks an existing member, and unlinking holds on their very next request', async () => {
+    const priya = await anEmployee(acme);
+    const member = await joined('link-by-hand', ['EMPLOYEE']);
+
+    await service.linkEmployee(acmeOwner, member, { employeeId: priya });
+    expect(await linkOf(member)).toBe(priya);
+
+    await service.linkEmployee(acmeOwner, member, { employeeId: null });
+    expect(await linkOf(member)).toBeNull();
+    // A token minted while they were linked still says so. It is not believed.
+    const stale = { ...tokenFor(member, acme), eid: priya };
+    expect((await auth.resolveActor(stale)).employeeId).toBeNull();
+
+    const [linked] = await audited(acme, member, 'LINK_EMPLOYEE');
+    expect(linked!.after).toMatchObject({ employeeId: priya });
+    expect(await audited(acme, member, 'UNLINK_EMPLOYEE')).toHaveLength(1);
+  });
+
+  it('never links the admin themselves', async () => {
+    const asha = await anEmployee(acme, 'Asha');
+    expect(await rejection(service.linkEmployee(acmeOwner, acmeOwner.userId, { employeeId: asha })))
+      .toBeInstanceOf(ForbiddenException);
+  });
+
+  it('will not let a role change be the way round it — but lets HR promote a linked employee', async () => {
+    const hr = actingAs(await joined('hr-promoter', ['HR_ADMIN']), acme, 'HR_ADMIN');
+
+    // Linked by someone who could, while it opened nothing at all...
+    const viewer = await anEmployee(acme, 'Founder');
+    const address = email('org-viewer');
+    const { token } = await sendInvite(acmeOwner, { email: address, roleIds: [await orgViewerRole()], employeeId: viewer });
+    await service.acceptInvitation(token, PASSWORD);
+    const login = (await userIdFor(address))!;
+
+    // ...then made an Employee by HR, who cannot see pay: that adds the
+    // founder's own payslip to a login HR may control. Refused.
+    expect(await rejection(service.updateRoles(hr, login, { roleIds: [await roleId(acme, 'EMPLOYEE')] })))
+      .toBeInstanceOf(ForbiddenException);
+
+    // Promoting a linked employee to manager adds team views HR already has.
+    const anil = await anEmployee(acme, 'Anil');
+    const staff = await joined('promote-me', ['EMPLOYEE']);
+    await service.linkEmployee(acmeOwner, staff, { employeeId: anil });
+    await service.updateRoles(hr, staff, { roleIds: [await roleId(acme, 'MANAGER')] });
+    expect(await rolesHeld(acme, staff)).toEqual(['MANAGER']);
+  });
+
+  it('frees the employee when their login is removed', async () => {
+    const priya = await anEmployee(acme);
+    const member = await joined('removed-linked', ['EMPLOYEE']);
+    await service.linkEmployee(acmeOwner, member, { employeeId: priya });
+
+    await service.remove(acmeOwner, member);
+
+    expect(await linkOf(member)).toBeNull();
+    await sendInvite(acmeOwner, { email: email('priya-new-login'), roleIds: [await roleId(acme, 'EMPLOYEE')], employeeId: priya });
+  });
+
+  it('kills a demoted admin\'s invitations that link someone they could no longer link', async () => {
+    const priya = await anEmployee(acme);
+    const deputy = await joined('deputy', ['SUPER_ADMIN']);
+    const employeeRole = await roleId(acme, 'EMPLOYEE');
+    const linking = await sendInvite(actingAs(deputy, acme, 'SUPER_ADMIN'), {
+      email: email('deputy-linked-invite'), roleIds: [employeeRole], employeeId: priya,
+    });
+    const plain = await sendInvite(actingAs(deputy, acme, 'SUPER_ADMIN'), {
+      email: email('deputy-plain-invite'), roleIds: [employeeRole],
+    });
+
+    // HR Admin still holds every Employee permission, but not payslip.view.all.
+    await service.updateRoles(acmeOwner, deputy, { roleIds: [await roleId(acme, 'HR_ADMIN')] });
+
+    expect(await rejection(service.acceptInvitation(linking.token, PASSWORD))).toBeInstanceOf(NotFoundException);
+    await service.acceptInvitation(plain.token, PASSWORD);
   });
 });

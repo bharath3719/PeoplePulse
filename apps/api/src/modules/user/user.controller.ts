@@ -2,7 +2,8 @@ import {
   Controller, Get, Post, Put, Delete, Param, Req, HttpCode, ParseUUIDPipe,
 } from '@nestjs/common';
 import {
-  inviteUserSchema, updateMemberRolesSchema, type InviteUserInput, type UpdateMemberRolesInput,
+  inviteUserSchema, linkEmployeeSchema, updateMemberRolesSchema,
+  type InviteUserInput, type LinkEmployeeInput, type UpdateMemberRolesInput,
 } from '@peoplepulse/core';
 import { RequirePermission } from '../../platform/rbac/require-permission.decorator';
 import { actorOrThrow } from '../../platform/rbac/permission.guard';
@@ -38,6 +39,13 @@ export class UserController {
     return this.users.grantableRoles(actorOrThrow(req));
   }
 
+  /** Each employee the caller can see, and who signs in as them: the invite and link pickers (D-26). */
+  @Get('employee-logins')
+  @RequirePermission('user.invite')
+  employeeLogins(@Req() req: AuthedRequest) {
+    return this.users.employeeLogins(actorOrThrow(req));
+  }
+
   @Post('invitations')
   @RequirePermission('user.invite')
   invite(@Req() req: AuthedRequest, @ZodBody(inviteUserSchema) input: InviteUserInput) {
@@ -61,6 +69,21 @@ export class UserController {
     @ZodBody(updateMemberRolesSchema) input: UpdateMemberRolesInput,
   ) {
     await this.users.updateRoles(actorOrThrow(req), userId, input);
+  }
+
+  /**
+   * Which employee they sign in as; `null` unlinks. `user.manage`, so behind a
+   * second factor: a link decides whose leave and payslips are "theirs".
+   */
+  @Put(':userId/employee')
+  @RequirePermission('user.manage')
+  @HttpCode(204)
+  async linkEmployee(
+    @Req() req: AuthedRequest,
+    @Param('userId', ParseUUIDPipe) userId: string,
+    @ZodBody(linkEmployeeSchema) input: LinkEmployeeInput,
+  ) {
+    await this.users.linkEmployee(actorOrThrow(req), userId, input);
   }
 
   /** Ends the membership, not the login: it may serve other companies. */

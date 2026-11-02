@@ -1,11 +1,12 @@
 import { useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { UserPlus } from 'lucide-react';
 import { toIstDate } from '@peoplepulse/core';
 import { Button } from '@/components/ui/button';
 import { usePermissions } from '@/features/auth/permissions';
 import { InviteUser } from './InviteUser';
 import { ManageMember } from './ManageMember';
-import { useAccess, useRevokeInvitation, type RoleRef } from './api/users';
+import { useAccess, useRevokeInvitation, type EmployeeRef, type RoleRef } from './api/users';
 
 /**
  * Who can sign in to this company, and who has been asked to (D-16).
@@ -19,7 +20,10 @@ export function UserAccess() {
   const { session, can } = usePermissions();
   const access = useAccess();
   const revoke = useRevokeInvitation();
-  const [inviting, setInviting] = useState(false);
+  // `?invite=<employee id>` — from "Invite to sign in" on an employee's profile.
+  const [params, setParams] = useSearchParams();
+  const inviteFor = params.get('invite') ?? undefined;
+  const [inviting, setInviting] = useState(Boolean(inviteFor));
   const [managingId, setManagingId] = useState<string | null>(null);
 
   const members = access.data?.members ?? [];
@@ -45,7 +49,15 @@ export function UserAccess() {
         )}
       </div>
 
-      {inviting && <InviteUser onDone={() => setInviting(false)} />}
+      {inviting && (
+        <InviteUser
+          {...(inviteFor && { employeeId: inviteFor })}
+          onDone={() => {
+            setInviting(false);
+            if (inviteFor) setParams({}, { replace: true });
+          }}
+        />
+      )}
 
       {managing && <ManageMember key={managing.userId} member={managing} onDone={() => setManagingId(null)} />}
 
@@ -57,7 +69,10 @@ export function UserAccess() {
           <Table head={['Email', 'Access', 'Expires', '']}>
             {invitations.map((i) => (
               <tr key={i.id} className="border-b last:border-0">
-                <td className="px-4 py-3 font-medium">{i.email}</td>
+                <td className="px-4 py-3 font-medium">
+                  {i.email}
+                  <SignsInAs employee={i.employee} />
+                </td>
                 <td className="px-4 py-3"><Roles roles={i.roles} /></td>
                 <td className="tabular px-4 py-3 text-sm">
                   {i.expired
@@ -92,6 +107,7 @@ export function UserAccess() {
                   {m.userId === session?.userId && (
                     <span className="ml-2 text-xs font-normal text-muted-foreground">(you)</span>
                   )}
+                  <SignsInAs employee={m.employee} />
                 </td>
                 <td className="px-4 py-3"><Roles roles={m.roles} /></td>
                 <td className="tabular px-4 py-3 text-sm">{toIstDate(new Date(m.joinedAt))}</td>
@@ -113,6 +129,16 @@ export function UserAccess() {
         </section>
       )}
     </div>
+  );
+}
+
+/** Which employee a login is — whose leave and payslips are "theirs" (D-26). */
+function SignsInAs({ employee }: { employee: EmployeeRef | null }) {
+  if (!employee) return null;
+  return (
+    <p className="text-xs font-normal text-muted-foreground">
+      as {employee.name} <span className="tabular">{employee.empCode}</span>
+    </p>
   );
 }
 

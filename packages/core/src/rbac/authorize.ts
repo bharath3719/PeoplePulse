@@ -48,6 +48,37 @@ export function canGrant(actor: Actor, permissions: readonly Permission[]): bool
   return canAll(actor, permissions);
 }
 
+/**
+ * May this actor tie a login holding `permissions` to an employee record?
+ *
+ * A link is not a permission, but it is access: the login's `own` scopes — and
+ * through `team`, the employee's reports — now mean THAT employee. Their leave
+ * today; their payslips in Phase 2. So, like granting, linking is bounded by
+ * what the linker can already see: the company-wide permission of every family
+ * the login holds a narrower one in.
+ *
+ * Without it, an HR Admin who cannot see pay invites a second address of their
+ * own, linked to the founder's employee record, and reads the founder's
+ * payslip as "my own". `canGrant` stops them handing themselves a role; this
+ * stops them handing themselves a person.
+ */
+export function canLink(actor: Pick<Actor, 'permissions'>, permissions: readonly Permission[]): boolean {
+  return LINKED_SCOPES.every(({ all, narrower }) =>
+    actor.permissions.has(all) || !narrower.some((p) => permissions.includes(p)));
+}
+
+/**
+ * Every family of "whose X may you see", with the permissions that make a
+ * login's employee link matter. rbac.test.ts fails if a `.own` permission is
+ * added to the registry and not listed here.
+ */
+export const LINKED_SCOPES: readonly { all: Permission; narrower: readonly Permission[] }[] = [
+  { all: 'employee.view.all', narrower: ['employee.view'] },
+  { all: 'attendance.view.all', narrower: ['attendance.view.team', 'attendance.view.own'] },
+  { all: 'leave.view.all', narrower: ['leave.view.team', 'leave.view.own'] },
+  { all: 'payslip.view.all', narrower: ['payslip.view.own'] },
+];
+
 export class ForbiddenError extends Error {
   constructor(readonly permission: Permission) {
     // Deliberately vague to the caller. A 403 that says WHICH permission is

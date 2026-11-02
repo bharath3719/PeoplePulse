@@ -4,16 +4,16 @@ import {
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { and, asc, desc, eq, inArray, isNull, ne } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNull, ne, or, type SQL } from 'drizzle-orm';
 import { z } from 'zod';
 import * as argon2 from 'argon2';
 import {
-  user, userTenant, userRole, role, rolePermission, userInvitation, tenant,
+  user, userTenant, userRole, role, rolePermission, userInvitation, tenant, employee,
   withTenant, type Database, type TenantDatabase, type UserInvitation,
 } from '@peoplepulse/db';
 import {
-  canGrant, isPermission, newPasswordSchema,
-  type Actor, type InviteUserInput, type Permission, type UpdateMemberRolesInput,
+  canGrant, canLink, isPermission, newPasswordSchema, resolveScope, SCOPES,
+  type Actor, type InviteUserInput, type LinkEmployeeInput, type Permission, type UpdateMemberRolesInput,
 } from '@peoplepulse/core';
 import { DB } from '../../platform/database/database.module';
 import { AuditService } from '../../platform/audit/audit.service';
@@ -26,7 +26,23 @@ import { invitationMail } from './invitation-mail';
 /** Long enough to survive a weekend and a slow CA firm; short enough to go stale. */
 const INVITATION_TTL_DAYS = 7;
 
+/** Why `canLink` said no, in the words the admin sees. */
+const LINK_REFUSED = 'A login linked to an employee sees that employee’s own leave, and their payslips once '
+  + 'payroll runs. You can link only access you can already see for everyone — ask someone who can see pay.';
+
 export interface RoleOption { id: string; name: string; description: string | null }
+
+/** An employee record, as the access screens name it. */
+export interface EmployeeRef { id: string; empCode: string; name: string }
+
+/** Who signs in as each employee, if anyone — for the invite and link pickers (D-26). */
+export interface EmployeeLogin extends EmployeeRef {
+  workEmail: string | null;
+  /** The login linked to them. */
+  login: string | null;
+  /** The address a live invitation for them was sent to. */
+  invitedAs: string | null;
+}
 
 export interface Member {
   userId: string;
@@ -40,6 +56,8 @@ export interface Member {
    * other than themselves, who can do nothing the caller cannot.
    */
   manageable: boolean;
+  /** The employee they sign in as (D-26). Null for an accountant, or anyone not linked yet. */
+  employee: EmployeeRef | null;
 }
 
 type RoleWithPermissions = RoleOption & { permissions: Permission[] };
@@ -51,6 +69,8 @@ export interface PendingInvitation {
   invitedAt: Date;
   expiresAt: Date;
   expired: boolean;
+  /** Who accepting will link them to, if anyone. */
+  employee: EmployeeRef | null;
 }
 
 export interface InvitationPreview {
@@ -92,6 +112,7 @@ export class UserService {
     return withTenant(this.db, actor.tenantId, async (tx) => {
       const memberRows = await tx.select({
         userId: user.id, email: user.email, joinedAt: userTenant.createdAt, mfaEnabledAt: user.mfaEnabledAt,
+        employeeId: userTenant.employeeId,
       })
         .from(userTenant)
         .innerJoin(user, eq(user.id, userTenant.userId))
@@ -108,19 +129,21 @@ export class UserService {
         .orderBy(desc(userInvitation.createdAt));
 
       const roleNames = new Map(roles.map((r) => [r.id, r.name]));
+      const people = await employeeRefs(tx, [...memberRows.map((m) => m.employeeId), ...pending.map((i) => i.employeeId)]);
       const now = new Date();
 
       return {
-        members: memberRows.map(({ mfaEnabledAt, ...m }) => {
+        members: memberRows.map(({ mfaEnabledAt, employeeId, ...m }) => {
           const held = rolesHeldBy(m.userId, holdings, roles);
           return {
             ...m,
             roles: held.map(({ id, name }) => ({ id, name })),
             mfaEnabled: Boolean(mfaEnabledAt),
             manageable: m.userId !== actor.userId && canGrant(actor, held.flatMap((r) => r.permissions)),
+            employee: employeeId ? (people.get(employeeId) ?? null) : null,
           };
         }),
-        invitations: pending.map((i) => toPendingView(i, roleNames, now)),
+        invitations: pending.map((i) => toPendingView(i, roleNames, now, people)),
       };
     });
   }
@@ -197,6 +220,11 @@ export class UserService {
         throw new ForbiddenException('You cannot grant access you do not hold yourself');
       }
 
+      // Accepting will link the login to this employee (D-26).
+      const linked = input.employeeId
+        ? await this.employeeToLink(tx, actor, input.employeeId, roles.flatMap((r) => r.permissions))
+        : null;
+
       const [member] = await tx.select({ id: user.id }).from(user)
         .innerJoin(userTenant, and(
           eq(userTenant.userId, user.id),
@@ -212,11 +240,14 @@ export class UserService {
       }
 
       // Inviting again replaces the live invitation: the old link stops working,
-      // so it cannot outlive a change of mind about the roles.
+      // so it cannot outlive a change of mind about the roles — or about which
+      // address an employee's login should go to.
       const replaced = await tx.update(userInvitation)
         .set({ revokedAt: new Date() })
         .where(and(
-          eq(userInvitation.email, input.email),
+          linked
+            ? or(eq(userInvitation.email, input.email), eq(userInvitation.employeeId, linked.id))
+            : eq(userInvitation.email, input.email),
           isNull(userInvitation.acceptedAt),
           isNull(userInvitation.revokedAt),
         ))
@@ -228,6 +259,7 @@ export class UserService {
         tenantId: actor.tenantId,
         email: input.email,
         roleIds,
+        employeeId: linked?.id ?? null,
         tokenHash: hashSecret(secret),
         invitedByUserId: actor.userId,
         expiresAt: new Date(now.getTime() + INVITATION_TTL_DAYS * 24 * 60 * 60 * 1000),
@@ -240,6 +272,7 @@ export class UserService {
         after: {
           email: input.email,
           roles: roles.map((r) => r.name),
+          ...(linked && { employee: linked.empCode }),
           replaced: replaced.map((r) => r.id),
         },
       });
@@ -248,7 +281,9 @@ export class UserService {
       const [inviter] = await tx.select({ email: user.email }).from(user).where(eq(user.id, actor.userId));
 
       return {
-        invitation: toPendingView(created!, new Map(roles.map((r) => [r.id, r.name])), now),
+        invitation: toPendingView(
+          created!, new Map(roles.map((r) => [r.id, r.name])), now, new Map(linked ? [[linked.id, linked]] : []),
+        ),
         token: `${actor.tenantId}.${secret}`,
         companyName: company!.name,
         invitedBy: inviter?.email,
@@ -350,15 +385,33 @@ export class UserService {
         throw new GoneException('The roles on this invitation no longer exist. Ask for a new one.');
       }
 
+      // Checked again, not trusted from invite time: in the week between, the
+      // employee may have been anonymised, or an admin may have linked them to
+      // another login. (A hard delete takes the invitation with it.)
+      const employeeId = invitation.employeeId;
+      if (employeeId) {
+        const [person] = await tx.select({ id: employee.id }).from(employee)
+          .where(and(eq(employee.id, employeeId), isNull(employee.deletedAt)));
+        if (!person) {
+          throw new GoneException('The employee record this invitation was for has been removed. Ask for a new one.');
+        }
+        const [taken] = await tx.select({ userId: userTenant.userId }).from(userTenant)
+          .where(and(eq(userTenant.tenantId, tenantId), eq(userTenant.employeeId, employeeId)));
+        if (taken && taken.userId !== userId) {
+          throw new ConflictException('Someone already signs in as this employee. Ask whoever invited you.');
+        }
+      }
+
       if (membership) {
         // Back after being removed. The roles held then do not come back with
-        // them; they get exactly what this invitation says.
-        await tx.update(userTenant).set({ isActive: true })
+        // them, and nor does an employee link: they get exactly what this
+        // invitation says.
+        await tx.update(userTenant).set({ isActive: true, employeeId })
           .where(and(eq(userTenant.userId, userId), eq(userTenant.tenantId, tenantId)));
         await tx.delete(userRole)
           .where(and(eq(userRole.userId, userId), eq(userRole.tenantId, tenantId)));
       } else {
-        await tx.insert(userTenant).values({ userId, tenantId, employeeId: null });
+        await tx.insert(userTenant).values({ userId, tenantId, employeeId });
       }
 
       await tx.insert(userRole).values(roles.map((r) => ({ userId, roleId: r.id, tenantId })));
@@ -368,13 +421,16 @@ export class UserService {
 
       // The invitee is the actor: they did this, by accepting.
       const invitee: Actor = {
-        userId, tenantId, employeeId: null, permissions: new Set(), mfaVerified: false,
+        userId, tenantId, employeeId, permissions: new Set(), mfaVerified: false,
       };
       await this.audit.record(tx, invitee, {
         entity: 'user_invitation',
         entityId: invitation.id,
         action: 'ACCEPT',
-        after: { newAccount: !account, rejoined: Boolean(membership), roles: roles.map((r) => r.name) },
+        after: {
+          newAccount: !account, rejoined: Boolean(membership), roles: roles.map((r) => r.name),
+          ...(employeeId && { employeeId }),
+        },
       });
 
       return { email: invitation.email, tenantId };
@@ -405,6 +461,16 @@ export class UserService {
       if (!granting.every((r) => canGrant(self, r.permissions))) {
         throw new ForbiddenException('You cannot grant access you do not hold yourself');
       }
+      // Linked to an employee, any "own" or "team" scope the new roles ADD opens
+      // more of that person (D-26). Otherwise linking a login that holds nothing,
+      // then promoting it to Employee, would be the way round canLink. What they
+      // already held was opened by whoever linked them, so promoting an employee
+      // to manager needs only the team views, which HR has.
+      const holding = new Set(held.flatMap((r) => r.permissions));
+      const adding = granting.flatMap((r) => r.permissions).filter((p) => !holding.has(p));
+      if (member.employeeId && !canLink(self, adding)) {
+        throw new ForbiddenException(LINK_REFUSED);
+      }
 
       const before = held.map((r) => r.id).sort();
       if (before.join() === [...roleIds].sort().join()) return;
@@ -413,8 +479,11 @@ export class UserService {
       await tx.insert(userRole).values(granting.map((r) => ({ userId, roleId: r.id, tenantId: actor.tenantId })));
 
       const nowHolds = new Set(granting.flatMap((r) => r.permissions));
-      const revoked = await revokeInvitationsSentBy(tx, userId, (ids) =>
-        roles.filter((r) => ids.includes(r.id)).every((r) => r.permissions.every((p) => nowHolds.has(p))));
+      const revoked = await revokeInvitationsSentBy(tx, userId, (invitation) => {
+        const offered = roles.filter((r) => invitation.roleIds.includes(r.id)).flatMap((r) => r.permissions);
+        return offered.every((p) => nowHolds.has(p))
+          && (!invitation.employeeId || canLink({ permissions: nowHolds }, offered));
+      });
 
       await this.audit.record(tx, actor, {
         entity: 'user',
@@ -442,7 +511,8 @@ export class UserService {
     await withTenant(this.db, actor.tenantId, async (tx) => {
       const { member, held } = await this.lockForChange(tx, actor, userId);
 
-      await tx.update(userTenant).set({ isActive: false })
+      // The employee link goes too, so the employee can be given a login again.
+      await tx.update(userTenant).set({ isActive: false, employeeId: null })
         .where(and(eq(userTenant.userId, userId), eq(userTenant.tenantId, actor.tenantId)));
       await tx.delete(userRole).where(and(eq(userRole.userId, userId), eq(userRole.tenantId, actor.tenantId)));
       const revoked = await revokeInvitationsSentBy(tx, userId, () => false);
@@ -451,7 +521,7 @@ export class UserService {
         entity: 'user',
         entityId: userId,
         action: 'REMOVE',
-        before: { email: member.email, roles: held.map((r) => r.name) },
+        before: { email: member.email, roles: held.map((r) => r.name), employeeId: member.employeeId },
         after: { revokedInvitations: revoked },
       });
     });
@@ -508,6 +578,127 @@ export class UserService {
   }
 
   /**
+   * Link a member to the employee they are, or unlink them (D-26).
+   *
+   * `user.manage`, through `lockForChange` like any other change to someone's
+   * access: never yourself, and never someone who can do what you cannot. A
+   * founder who is also an employee is linked by another admin — linking
+   * yourself is choosing whose leave and payslip are "yours".
+   *
+   * Unlinking takes effect on their next request (AuthService.resolveActor
+   * reads the link from here, not from their token).
+   */
+  async linkEmployee(actor: Actor, userId: string, input: LinkEmployeeInput): Promise<void> {
+    await withTenant(this.db, actor.tenantId, async (tx) => {
+      const { self, member, held } = await this.lockForChange(tx, actor, userId);
+      if (member.employeeId === input.employeeId) return;
+
+      const linked = input.employeeId
+        ? await this.employeeToLink(tx, self, input.employeeId, held.flatMap((r) => r.permissions), userId)
+        : null;
+
+      await tx.update(userTenant).set({ employeeId: linked?.id ?? null })
+        .where(and(eq(userTenant.userId, userId), eq(userTenant.tenantId, actor.tenantId)));
+
+      // A link made by hand supersedes any invitation still waiting to make one.
+      const superseded = linked
+        ? await tx.update(userInvitation).set({ revokedAt: new Date() })
+          .where(and(
+            eq(userInvitation.employeeId, linked.id),
+            isNull(userInvitation.acceptedAt),
+            isNull(userInvitation.revokedAt),
+          ))
+          .returning({ id: userInvitation.id })
+        : [];
+
+      await this.audit.record(tx, actor, {
+        entity: 'user',
+        entityId: userId,
+        action: linked ? 'LINK_EMPLOYEE' : 'UNLINK_EMPLOYEE',
+        before: { email: member.email, employeeId: member.employeeId },
+        after: {
+          employeeId: linked?.id ?? null,
+          ...(linked && { employee: linked.empCode }),
+          ...(superseded.length > 0 && { revokedInvitations: superseded.map((i) => i.id) }),
+        },
+      });
+    });
+  }
+
+  /**
+   * Every employee the actor can see, and who signs in as them — for the
+   * pickers that offer an employee to invite or link. Scoped like the employee
+   * list: you cannot pick someone you cannot see.
+   */
+  async employeeLogins(actor: Actor): Promise<EmployeeLogin[]> {
+    const scope = resolveScope(actor, SCOPES.employee);
+    if (scope.kind === 'none') return [];
+
+    return withTenant(this.db, actor.tenantId, async (tx) => {
+      const conditions: SQL[] = [isNull(employee.deletedAt)];
+      if (scope.kind === 'team') conditions.push(eq(employee.managerId, scope.managerEmployeeId));
+      if (scope.kind === 'own') conditions.push(eq(employee.id, scope.employeeId));
+
+      const people = await tx.select({
+        id: employee.id, empCode: employee.empCode, firstName: employee.firstName, lastName: employee.lastName,
+        workEmail: employee.workEmail,
+      }).from(employee).where(and(...conditions)).orderBy(asc(employee.empCode));
+
+      // `user_tenant` and `user` sit outside RLS; the tenant filter keeps this to ours.
+      const logins = await tx.select({ employeeId: userTenant.employeeId, email: user.email })
+        .from(userTenant).innerJoin(user, eq(user.id, userTenant.userId))
+        .where(and(eq(userTenant.tenantId, actor.tenantId), eq(userTenant.isActive, true)));
+      const invited = await tx.select({ employeeId: userInvitation.employeeId, email: userInvitation.email })
+        .from(userInvitation)
+        .where(and(isNull(userInvitation.acceptedAt), isNull(userInvitation.revokedAt)));
+
+      const loginOf = new Map(logins.flatMap((l) => (l.employeeId ? [[l.employeeId, l.email]] : [])));
+      const invitationOf = new Map(invited.flatMap((i) => (i.employeeId ? [[i.employeeId, i.email]] : [])));
+
+      return people.map((p) => ({
+        id: p.id,
+        empCode: p.empCode,
+        name: fullName(p),
+        workEmail: p.workEmail,
+        login: loginOf.get(p.id) ?? null,
+        invitedAs: invitationOf.get(p.id) ?? null,
+      }));
+    });
+  }
+
+  /**
+   * The employee a login may be linked to, or why not: one of this company's,
+   * not deleted, not already someone's login — and the link must open nothing
+   * the linker cannot already see (`canLink`). `exceptUserId` is the member
+   * being linked, who may hold the link already.
+   *
+   * Postgres checks `user_invitation.employee_id`'s foreign key without RLS, so
+   * the employee is read here, in-tenant, or another company's id would pass.
+   */
+  private async employeeToLink(
+    tx: TenantDatabase, linker: Actor, employeeId: string, permissions: readonly Permission[], exceptUserId?: string,
+  ): Promise<EmployeeRef> {
+    if (!canLink(linker, permissions)) throw new ForbiddenException(LINK_REFUSED);
+
+    const [person] = await tx.select({
+      id: employee.id, empCode: employee.empCode, firstName: employee.firstName, lastName: employee.lastName,
+    }).from(employee).where(and(eq(employee.id, employeeId), isNull(employee.deletedAt)));
+    if (!person) throw validationFailed([{ field: 'employeeId', message: 'Pick one of this company’s employees' }]);
+
+    const [taken] = await tx.select({ userId: userTenant.userId, email: user.email })
+      .from(userTenant).innerJoin(user, eq(user.id, userTenant.userId))
+      .where(and(eq(userTenant.tenantId, linker.tenantId), eq(userTenant.employeeId, employeeId)));
+    if (taken && taken.userId !== exceptUserId) {
+      throw new ConflictException({
+        title: 'Already linked',
+        errors: [{ field: 'employeeId', message: `${fullName(person)} already signs in as ${taken.email}` }],
+      });
+    }
+
+    return { id: person.id, empCode: person.empCode, name: fullName(person) };
+  }
+
+  /**
    * Everything a change to a member's access must establish first, under locks
    * held to the end of the caller's transaction.
    *
@@ -532,6 +723,7 @@ export class UserService {
 
     const locked = await tx.select({
       userId: userTenant.userId, isActive: userTenant.isActive, email: user.email, mfaEnabledAt: user.mfaEnabledAt,
+      employeeId: userTenant.employeeId,
     })
       .from(userTenant)
       .innerJoin(user, eq(user.id, userTenant.userId))
@@ -584,6 +776,20 @@ export class UserService {
   }
 }
 
+function fullName(p: { firstName: string; lastName: string | null }): string {
+  return [p.firstName, p.lastName].filter(Boolean).join(' ');
+}
+
+/** The employees these ids name, read under the caller's tenant context. Ids that are gone, or null, are skipped. */
+async function employeeRefs(tx: TenantDatabase, ids: (string | null)[]): Promise<Map<string, EmployeeRef>> {
+  const wanted = [...new Set(ids.filter((id): id is string => id !== null))];
+  if (wanted.length === 0) return new Map();
+  const rows = await tx.select({
+    id: employee.id, empCode: employee.empCode, firstName: employee.firstName, lastName: employee.lastName,
+  }).from(employee).where(inArray(employee.id, wanted));
+  return new Map(rows.map((r) => [r.id, { id: r.id, empCode: r.empCode, name: fullName(r) }]));
+}
+
 function rolesHeldBy(
   userId: string, holdings: { userId: string; roleId: string }[], roles: RoleWithPermissions[],
 ): RoleWithPermissions[] {
@@ -592,26 +798,30 @@ function rolesHeldBy(
 
 /**
  * Revoke the still-pending invitations a member sent, except those `keep`
- * accepts by their role ids. Returns the ids revoked, for the audit entry.
+ * accepts by their roles and employee. Returns the ids revoked, for the audit entry.
  */
 async function revokeInvitationsSentBy(
-  tx: TenantDatabase, userId: string, keep: (roleIds: string[]) => boolean,
+  tx: TenantDatabase, userId: string, keep: (invitation: { roleIds: string[]; employeeId: string | null }) => boolean,
 ): Promise<string[]> {
-  const pending = await tx.select({ id: userInvitation.id, roleIds: userInvitation.roleIds }).from(userInvitation)
+  const pending = await tx.select({
+    id: userInvitation.id, roleIds: userInvitation.roleIds, employeeId: userInvitation.employeeId,
+  }).from(userInvitation)
     .where(and(
       eq(userInvitation.invitedByUserId, userId),
       isNull(userInvitation.acceptedAt),
       isNull(userInvitation.revokedAt),
     ));
 
-  const revoke = pending.filter((i) => !keep(i.roleIds)).map((i) => i.id);
+  const revoke = pending.filter((i) => !keep(i)).map((i) => i.id);
   if (revoke.length > 0) {
     await tx.update(userInvitation).set({ revokedAt: new Date() }).where(inArray(userInvitation.id, revoke));
   }
   return revoke;
 }
 
-function toPendingView(i: UserInvitation, roleNames: Map<string, string>, now: Date): PendingInvitation {
+function toPendingView(
+  i: UserInvitation, roleNames: Map<string, string>, now: Date, people: Map<string, EmployeeRef>,
+): PendingInvitation {
   return {
     id: i.id,
     email: i.email,
@@ -622,6 +832,7 @@ function toPendingView(i: UserInvitation, roleNames: Map<string, string>, now: D
     invitedAt: i.createdAt,
     expiresAt: i.expiresAt,
     expired: i.expiresAt <= now,
+    employee: i.employeeId ? (people.get(i.employeeId) ?? null) : null,
   };
 }
 

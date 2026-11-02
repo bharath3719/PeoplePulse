@@ -1,0 +1,4 @@
+ALTER TABLE "user_invitation" ADD COLUMN "employee_id" uuid;--> statement-breakpoint
+ALTER TABLE "user_invitation" ADD CONSTRAINT "user_invitation_employee_id_employee_id_fk" FOREIGN KEY ("employee_id") REFERENCES "public"."employee"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+CREATE UNIQUE INDEX "user_invitation_live_employee_uq" ON "user_invitation" USING btree ("tenant_id","employee_id") WHERE employee_id is not null and accepted_at is null and revoked_at is null;--> statement-breakpoint
+CREATE UNIQUE INDEX "user_tenant_employee_uq" ON "user_tenant" USING btree ("tenant_id","employee_id") WHERE employee_id is not null;

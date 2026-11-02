@@ -2,7 +2,7 @@
 
 Cloud HRMS for Indian SMBs (10–200 employees). Core HR, Attendance, Leave, India-statutory Payroll, ATS, Performance, and L&D in one multi-tenant platform.
 
-**Status: Slice 1 is built and runs end to end, and Slice 2 — Leave — is built.** Company signup → login → two-factor authentication → inviting users → managing their access (roles, removal, two-factor reset) → company switcher → employee master (create, list, detail, edit, bank details, Excel import) → org structure → company settings, on an RLS-isolated tenant. Then leave: types, holidays, weekly offs, accruals, apply → approve → cancel, on an append-only ledger. 277 tests green.
+**Status: Slice 1 is built and runs end to end, and Slice 2 — Leave — is built.** Company signup → login → two-factor authentication → inviting users → managing their access (roles, removal, two-factor reset) → company switcher → employee master (create, list, detail, edit, bank details, Excel import) → org structure → company settings, on an RLS-isolated tenant. Then leave: types, holidays, weekly offs, accruals, apply → approve → cancel, on an append-only ledger; employees sign in as themselves. 288 tests green.
 
 ---
 
@@ -55,7 +55,7 @@ Two rules that are not negotiable, because violating either is a compliance defe
 npm install
 cp .env.example .env          # fill in your Postgres password
 npm run db:migrate            # schema + RLS policies + the peoplepulse_app role
-npm test                      # 277 tests, incl. 15 tenant-isolation + 29 leave + 22 employee-edit/delete + 5 switcher + 33 invitation/access + 21 sign-in/MFA + 3 mail + 5 rate-limit, on a real DB
+npm test                      # 288 tests, incl. 15 tenant-isolation + 29 leave + 22 employee-edit/delete + 5 switcher + 42 invitation/access/employee-link + 21 sign-in/MFA + 3 mail + 5 rate-limit, on a real DB
 
 npm run dev:api               # :3000/api/v1
 npm run dev:web               # :5173, proxies /api to the API
@@ -253,15 +253,22 @@ Six rules:
   company data but was left off the RLS list stops the API from starting, instead of quietly being
   readable by every company.
 
+**An employee gets a login by invitation from their profile** (Invite to sign in), or an admin links
+an existing login under Users → Manage ([D-26](docs/decisions/OPEN.md)). A link makes "my leave" — and
+in Phase 2 "my payslip" — mean that person, so it is bounded like granting: `canLink` requires the linker
+to see, company-wide, everything the link opens. An HR Admin who cannot see pay therefore cannot link an
+Employee; otherwise a second inbox of their own, linked to the founder, would read the founder's payslip.
+One login per employee, never yourself, re-checked at accept and on role changes, and read from the
+membership on every request so unlinking holds at once.
+
 ### Still open in Slice 2
 
-See [OPEN.md](docs/decisions/OPEN.md) §"Raised by Slice 2". Two are urgent:
+See [OPEN.md](docs/decisions/OPEN.md) §"Raised by Slice 2". One is urgent:
 
-- **No login can be linked to an employee yet (D-26)**, so nobody can apply for leave in a real
-  company. Signup and invitations both leave `user_tenant.employee_id` null. This is the next thing to
-  build.
 - **Year-end carry-forward is due by 31 December 2026 (D-25).** Without it every balance, earned leave
   included, starts 2027 at zero.
+- **Who may roll out self-service** (D-26): with the seeded roles, Super Admin or Payroll Admin — not an
+  HR Admin who cannot see pay. The Product Lead should confirm that trade-off before pilots.
 
 Also: one approval level, not LVE-03's two (D-20); default entitlements awaiting the SME (D-21); no
 optional holidays (D-22); a holiday added after a request does not re-price it (D-23).

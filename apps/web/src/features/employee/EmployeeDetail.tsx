@@ -7,6 +7,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { PfStatusBadge, EsiStatusBadge } from '@/components/ui/pf-status-badge';
 import { Can } from '@/features/auth/permissions';
 import { EmployeeLeave } from '@/features/leave/EmployeeLeave';
+import { EmployeeSignIn } from '@/features/users/EmployeeSignIn';
 import { useDeleteEmployee, useEmployee, useRevealIdentifiers, type Employee } from './api/employees';
 
 export function EmployeeDetail() {
@@ -57,6 +58,9 @@ export function EmployeeDetail() {
         <div className="flex items-center gap-2">
           <PfStatusBadge status={employee.pfStatus} />
           <EsiStatusBadge status={employee.esiStatus} />
+          <Can I="user.invite">
+            <EmployeeSignIn employeeId={employee.id} />
+          </Can>
           <Can I="employee.edit">
             <Button variant="outline" size="sm" onClick={() => navigate(`/employees/${id}/edit`)}>
               <Pencil className="h-4 w-4" /> Edit

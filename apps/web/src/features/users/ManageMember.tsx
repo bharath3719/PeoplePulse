@@ -3,11 +3,13 @@ import { updateMemberRolesSchema } from '@peoplepulse/core';
 import { ApiError } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Field } from '@/components/ui/field';
+import { Select } from '@/components/ui/select';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { RequireMfa } from '@/features/auth/Mfa';
 import { usePermissions } from '@/features/auth/permissions';
 import {
-  useGrantableRoles, useRemoveMember, useResetMemberMfa, useUpdateMemberRoles, type Member,
+  useEmployeeLogins, useGrantableRoles, useLinkEmployee, useRemoveMember, useResetMemberMfa, useUpdateMemberRoles,
+  type Member,
 } from './api/users';
 
 /**
@@ -32,6 +34,7 @@ export function ManageMember({ member, onDone }: { member: Member; onDone: () =>
           </CardHeader>
           <CardContent className="space-y-6">
             <RolesForm member={member} onDone={onDone} />
+            <EmployeeLink member={member} />
             <ResetMfa member={member} />
             <Remove member={member} onDone={onDone} />
           </CardContent>
@@ -95,6 +98,49 @@ function RolesForm({ member, onDone }: { member: Member; onDone: () => void }) {
 }
 
 /**
+ * Which employee they sign in as (D-26). The server refuses a link that would
+ * show them more than the admin can see — someone's pay, typically — and says
+ * so; the list here is only employees with no login yet, and theirs.
+ */
+function EmployeeLink({ member }: { member: Member }) {
+  const people = useEmployeeLogins();
+  const link = useLinkEmployee(member.userId);
+  const current = member.employee?.id ?? '';
+  const [choice, setChoice] = useState(current);
+  const options = people.data?.filter((p) => !p.login || p.id === current) ?? [];
+
+  return (
+    <section className="space-y-2 border-t pt-4">
+      <h3 className="text-sm font-medium">Signs in as</h3>
+      <p className="text-xs text-muted-foreground">
+        The employee whose leave &mdash; and, once payroll runs, payslips &mdash; are theirs to see.
+      </p>
+      <div className="flex gap-2">
+        <Select value={choice} onChange={(e) => setChoice(e.target.value)} aria-label="Employee record">
+          <option value="">Not an employee</option>
+          {options.map((p) => (
+            <option key={p.id} value={p.id}>{p.name} ({p.empCode})</option>
+          ))}
+        </Select>
+        <Button
+          type="button"
+          variant="outline"
+          disabled={choice === current || link.isPending}
+          onClick={() => link.mutate({ employeeId: choice || null })}
+        >
+          {link.isPending ? 'Saving…' : 'Save'}
+        </Button>
+      </div>
+      {link.isError && (
+        <p className="text-sm text-destructive">
+          {link.error instanceof ApiError ? (link.error.fieldErrors[0]?.message ?? link.error.message) : link.error.message}
+        </p>
+      )}
+    </section>
+  );
+}
+
+/**
  * Whoever signs in with their password next can set up a new authenticator —
  * so the admin must know it is really them asking, by some route a stolen
  * password does not give.
@@ -152,7 +198,7 @@ function Remove({ member, onDone }: { member: Member; onDone: () => void }) {
           <p>
             {member.email} will lose all access to {company} straight away, and any invitations
             they&apos;ve sent will stop working. Their employee record, if they have one, is not
-            affected.
+            affected &mdash; this login just stops signing in as it.
           </p>
           <div className="flex gap-2">
             <Button

@@ -4,17 +4,33 @@ import { inviteUserSchema, toIstDate } from '@peoplepulse/core';
 import { ApiError } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Select } from '@/components/ui/select';
 import { Field } from '@/components/ui/field';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
-import { useGrantableRoles, useInviteUser, type PendingInvitation } from './api/users';
+import { useEmployeeLogins, useGrantableRoles, useInviteUser, type PendingInvitation } from './api/users';
 
-/** Invite someone: they get an email with a link to accept. */
-export function InviteUser({ onDone }: { onDone: () => void }) {
+/**
+ * Invite someone: they get an email with a link to accept.
+ *
+ * Naming the employee they are (D-26) links the login on accepting — which is
+ * how an employee gets self-service. `employeeId` preselects one, for the
+ * "Invite to sign in" button on an employee's profile.
+ */
+export function InviteUser({ onDone, employeeId: preset }: { onDone: () => void; employeeId?: string }) {
   const roles = useGrantableRoles();
+  const people = useEmployeeLogins();
   const invite = useInviteUser();
   const [errors, setErrors] = useState<Record<string, string>>({});
+  const [employeeId, setEmployeeId] = useState(preset ?? '');
+  // Null until typed in: until then the address follows the chosen employee's
+  // work email, so picking someone fills it in without a copy to go stale.
+  const [typedEmail, setTypedEmail] = useState<string | null>(null);
 
   if (invite.data) return <InvitationSent invitation={invite.data.invitation} onDone={onDone} />;
+
+  const unlinked = people.data?.filter((p) => !p.login) ?? [];
+  const chosen = unlinked.find((p) => p.id === employeeId);
+  const email = typedEmail ?? chosen?.workEmail ?? '';
 
   function submit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -23,8 +39,9 @@ export function InviteUser({ onDone }: { onDone: () => void }) {
     // The same schema the API validates with, so the browser cannot accept
     // what the server will refuse.
     const parsed = inviteUserSchema.safeParse({
-      email: String(f.get('email') ?? ''),
+      email,
       roleIds: f.getAll('roleIds').map(String),
+      employeeId: employeeId || undefined,
     });
     if (!parsed.success) {
       setErrors(Object.fromEntries(parsed.error.errors.map((err) => [err.path.join('.'), err.message])));
@@ -57,8 +74,32 @@ export function InviteUser({ onDone }: { onDone: () => void }) {
 
       <CardContent>
         <form onSubmit={submit} className="space-y-4" noValidate>
+          {unlinked.length > 0 && (
+            <Field
+              label="Signs in as"
+              error={errors['employeeId']}
+              hint="For an employee's own login: they'll see their own leave here, and their payslips once payroll runs."
+            >
+              <Select value={employeeId} onChange={(e) => setEmployeeId(e.target.value)}>
+                <option value="">Not an employee (an accountant, say)</option>
+                {unlinked.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name} ({p.empCode}){p.invitedAs ? ` — invited as ${p.invitedAs}` : ''}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+          )}
+
           <Field label="Email" required error={errors['email']}>
-            <Input name="email" type="email" placeholder="ravi@ca-firm.in" aria-invalid={Boolean(errors['email'])} />
+            <Input
+              name="email"
+              type="email"
+              placeholder="ravi@ca-firm.in"
+              value={email}
+              onChange={(e) => setTypedEmail(e.target.value)}
+              aria-invalid={Boolean(errors['email'])}
+            />
           </Field>
 
           <Field
@@ -110,6 +151,7 @@ function InvitationSent({ invitation, onDone }: { invitation: PendingInvitation;
           Invitation sent to {invitation.email}
         </CardTitle>
         <CardDescription>
+          {invitation.employee && <>Accepting signs them in as {invitation.employee.name}. </>}
           The link in it works once, only for that address, until{' '}
           {toIstDate(new Date(invitation.expiresAt))}. If it doesn&rsquo;t arrive, check their spam
           folder, or invite them again &mdash; the first link then stops working.

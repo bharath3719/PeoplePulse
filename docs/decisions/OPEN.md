@@ -205,18 +205,30 @@ This is what NFR-08 requires — statutory records held **≥ 8 years** — whil
 ## 🟠 Raised by Slice 2 — Leave (2-Nov-2026)
 
 Leave was built first of the two Phase 1 modules, for the reasons in [ADR-007](ADR-007-leave-is-a-ledger.md).
-These came up building it. Two are 🔴 because of a date or because the module cannot be used without them.
+These came up building it. D-25 is 🔴 because of a date.
 
-### D-26 — A login cannot be linked to an employee record 🔴
+### ~~D-26 — A login cannot be linked to an employee record~~ ✅ **BUILT 3-Nov-2026**
 
-Nothing in the product sets `user_tenant.employee_id`: signup and invitations both write `null`. So every
-login is "not an employee", and **nobody can apply for leave** — or, later, see their own payslip. The
-leave module was verified with the link set by hand in a dev database.
+Nothing set `user_tenant.employee_id`, so nobody could apply for leave. Now **both** routes exist: an
+invitation may name the employee it is for (Invite to sign in, on their profile — the ESS rollout), and an
+admin may link or unlink an existing member (Users → Manage, `user.manage`, so behind a second factor).
 
-**Needs deciding:** does an invitation carry the employee it is for (invite from the employee's profile —
-the natural ESS rollout), or does an admin link an existing login (Users → Manage), or both? Either way:
-one login per employee per company, checked in-tenant, audited, and `user.manage`-gated, because linking
-the wrong record shows someone another person's leave today and their salary in Phase 2.
+**The rule — `canLink`, beside `canGrant` in core:** a link makes the login's `own` and `team` scopes mean
+one person, so the linker must hold the company-wide `.all` permission of every family the login holds a
+narrower one in. With the seeded roles, **an HR Admin who cannot see pay cannot link an Employee** (who holds
+`payslip.view.own`); Super Admin and Payroll Admin can. Otherwise an HR Admin would invite a second inbox of
+their own, linked to the founder, and read the founder's payslip as "my own" in Phase 2. A company that
+wants HR to roll out self-service grants HR `payslip.view.all` — one click, and a visible choice to let HR
+see pay. **Product Lead: confirm this trade-off before pilots** — the alternative is HR rolling out ESS and
+a known route to pay.
+
+Also: one login per employee per company (unique index); never linking yourself (as with every
+`user.manage` change); removal clears the link; a role change on a linked member is checked for what it
+*adds*; a demoted inviter's pending links are revoked; the accept re-checks the employee. The actor's
+employee now comes from the membership on every request, not the token, so unlinking takes effect at once.
+
+**Still open:** a founder who is also an employee needs a second admin to link them; and nothing yet
+re-checks links when a role's permissions are edited (custom roles, ADM-01, are not editable yet).
 
 ### D-25 — Leave year-end: carry-forward, lapse, encashment (LVE-02) 🔴 **due 31-Dec-2026**
 

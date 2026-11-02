@@ -19,6 +19,12 @@ export const newPasswordSchema = z.string().min(12, 'Use at least 12 characters'
 export const inviteUserSchema = z.object({
   email: z.string().trim().toLowerCase().email('Enter a valid email address'),
   roleIds: z.array(z.string().uuid()).min(1, 'Pick at least one role').max(20),
+  /**
+   * The employee this login is for, when it is for one (D-26). Accepting links
+   * the two, and the login's "own" leave and payslips are then that person's —
+   * so naming one is bounded by `canLink`, as roles are by `canGrant`.
+   */
+  employeeId: z.string().uuid().optional(),
 }).strict();
 
 export type InviteUserInput = z.infer<typeof inviteUserSchema>;
@@ -34,3 +40,14 @@ export const updateMemberRolesSchema = z.object({
 }).strict();
 
 export type UpdateMemberRolesInput = z.infer<typeof updateMemberRolesSchema>;
+
+/**
+ * Which employee a member signs in as — or `null` for none (D-26). A login an
+ * external accountant uses has none; an employee's own login has exactly one,
+ * and no employee has two.
+ */
+export const linkEmployeeSchema = z.object({
+  employeeId: z.string().uuid().nullable(),
+}).strict();
+
+export type LinkEmployeeInput = z.infer<typeof linkEmployeeSchema>;

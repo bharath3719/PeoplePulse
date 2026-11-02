@@ -479,8 +479,8 @@ export class AuthService {
    * them out, and signing in again lands them in a company they still belong to.
    */
   async resolveActor(payload: JwtPayload): Promise<Actor> {
-    const permissions = await withTenant(this.db, payload.tid, async (tx) => {
-      const [member] = await tx.select({ userId: userTenant.userId }).from(userTenant)
+    const { employeeId, permissions } = await withTenant(this.db, payload.tid, async (tx) => {
+      const [member] = await tx.select({ employeeId: userTenant.employeeId }).from(userTenant)
         .innerJoin(user, eq(user.id, userTenant.userId))
         .where(and(
           eq(userTenant.userId, payload.sub),
@@ -489,13 +489,17 @@ export class AuthService {
           eq(user.isActive, true),
         ));
       if (!member) throw new UnauthorizedException();
-      return permissionsIn(tx, payload.sub);
+      return { employeeId: member.employeeId, permissions: await permissionsIn(tx, payload.sub) };
     });
 
     return {
       userId: payload.sub,
       tenantId: payload.tid,
-      employeeId: payload.eid,
+      // From the membership, not the token's `eid`, for the reason permissions
+      // are (see JwtPayload): an admin who unlinks a login from an employee
+      // record (D-26) must not leave it reading that person's leave until the
+      // token expires. The row is already being read; the column is free.
+      employeeId,
       permissions,
       mfaVerified: payload.mfa,
     };

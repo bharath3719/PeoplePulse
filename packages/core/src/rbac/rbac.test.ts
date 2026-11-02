@@ -6,7 +6,7 @@ import {
 } from './permissions';
 import { SYSTEM_ROLES, requiresMfa } from './roles';
 import {
-  can, canAll, canAny, canGrant, requirePermission, resolveScope, SCOPES,
+  can, canAll, canAny, canGrant, canLink, LINKED_SCOPES, requirePermission, resolveScope, SCOPES,
   ForbiddenError, type Actor,
 } from './authorize';
 
@@ -115,6 +115,32 @@ describe('authorization', () => {
     expect(canGrant(actor, hr.permissions)).toBe(true);
     expect(canGrant(actor, payroll.permissions)).toBe(false);
     expect(canGrant(actor, [...manager.permissions, 'employee.salary.view'])).toBe(false);
+  });
+
+  it('lets an actor link a login to an employee only if they can already see what it opens', () => {
+    // An HR Admin who cannot see pay must not be able to link a second address
+    // of their own to the founder's record and read the founder's payslip.
+    const hr = SYSTEM_ROLES.find((r) => r.key === 'HR_ADMIN')!;
+    const payroll = SYSTEM_ROLES.find((r) => r.key === 'PAYROLL_ADMIN')!;
+    const employee = SYSTEM_ROLES.find((r) => r.key === 'EMPLOYEE')!;
+
+    expect(canLink(actorWith(...hr.permissions), employee.permissions)).toBe(false);
+    expect(canLink(actorWith(...payroll.permissions), employee.permissions)).toBe(true);
+    // A login that holds no "own" view of anything opens nothing by being linked.
+    expect(canLink(actorWith(), ['org.view'])).toBe(true);
+    // Granted pay, HR may: that is the one-click change the README expects.
+    expect(canLink(actorWith(...hr.permissions, 'payslip.view.all'), employee.permissions)).toBe(true);
+  });
+
+  it('covers every own- and team-scoped permission in the registry when linking', () => {
+    // A new `reimbursement.view.own`, say, left out of LINKED_SCOPES would be
+    // a link-shaped hole: nothing would check it.
+    const covered = new Set(LINKED_SCOPES.flatMap((s) => s.narrower));
+    const narrow = ALL_PERMISSIONS.filter((p) => /\.view\.(own|team)$/.test(p));
+    for (const p of narrow) expect(covered.has(p), p).toBe(true);
+    for (const scope of Object.values(SCOPES)) {
+      expect(LINKED_SCOPES.some((s) => s.all === scope.all && s.narrower.includes(scope.own)), scope.all).toBe(true);
+    }
   });
 
   it('throws Forbidden without naming the missing permission', () => {

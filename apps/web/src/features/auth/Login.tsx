@@ -7,7 +7,8 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/com
 import { useLogin, useSignup } from './api/auth';
 import { MfaCodeForm } from './Mfa';
 
-const done = () => { window.location.href = '/employees'; };
+// Home, not People: the app decides which page that is from what they can do.
+const done = () => { window.location.href = '/'; };
 /** In on a recovery code: straight to where the lost authenticator can be replaced. */
 const recovered = () => { window.location.href = '/security'; };
 

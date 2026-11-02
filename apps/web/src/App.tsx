@@ -81,13 +81,25 @@ function Gate() {
           <Route path="/security" element={<Security />} />
 
           {/* Already signed in — the login form has nothing to offer. */}
-          <Route path="/login" element={<Navigate to="/employees" replace />} />
-          <Route path="/" element={<Navigate to="/employees" replace />} />
+          <Route path="/login" element={<Home />} />
+          <Route path="/" element={<Home />} />
           <Route path="*" element={<NotFound />} />
         </Routes>
       </Shell>
     </PermissionProvider>
   );
+}
+
+/**
+ * Where "home" is. People, for whoever administers the company; their own leave
+ * for an employee, whose People page lists only their reports — empty, for most,
+ * which read as "No employees yet" on their first sign-in. Decided by what they
+ * can do, never by what their role is called.
+ */
+function Home() {
+  const { can } = usePermissions();
+  const home = !can('employee.view.all') && can('leave.apply') ? '/leave' : '/employees';
+  return <Navigate to={home} replace />;
 }
 
 function Shell({ children }: { children: React.ReactNode }) {

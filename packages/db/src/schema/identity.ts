@@ -3,6 +3,7 @@ import {
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 import { tenant } from './tenant';
+import { employee } from './employee';
 
 /**
  * A login. GLOBAL, not tenant-scoped — email is unique across the whole
@@ -97,6 +98,11 @@ export const userTenant = pgTable('user_tenant', {
 }, (t) => [
   primaryKey({ columns: [t.userId, t.tenantId] }),
   index('user_tenant_tenant_idx').on(t.tenantId),
+  // One login per employee per company (D-26). Two would be two people reading
+  // one person's leave and payslips as their own. Removing a member clears their
+  // link, so an old membership never holds an employee hostage.
+  uniqueIndex('user_tenant_employee_uq').on(t.tenantId, t.employeeId)
+    .where(sql`employee_id is not null`),
 ]);
 
 /**
@@ -183,6 +189,14 @@ export const userInvitation = pgTable('user_invitation', {
    */
   roleIds: uuid('role_ids').array().notNull(),
 
+  /**
+   * The employee this login is for, if any (D-26): accepting links the two. A
+   * real foreign key, unlike `user_tenant.employee_id`, because this table IS
+   * under RLS — and a hard-deleted employee takes their pending invitation with
+   * them. Postgres checks it without RLS, so the service checks it in-tenant.
+   */
+  employeeId: uuid('employee_id').references(() => employee.id, { onDelete: 'cascade' }),
+
   tokenHash: text('token_hash').notNull().unique(),
   invitedByUserId: uuid('invited_by_user_id').notNull(),
 
@@ -198,6 +212,11 @@ export const userInvitation = pgTable('user_invitation', {
   // old one first, so an earlier link cannot outlive the roles it promised.
   uniqueIndex('user_invitation_live_uq').on(t.tenantId, t.email)
     .where(sql`accepted_at is null and revoked_at is null`),
+  // And one per employee: two live links for one person, to two addresses,
+  // would let whichever is accepted second fail — or, without the login index
+  // above, succeed.
+  uniqueIndex('user_invitation_live_employee_uq').on(t.tenantId, t.employeeId)
+    .where(sql`employee_id is not null and accepted_at is null and revoked_at is null`),
 ]);
 
 export type User = typeof user.$inferSelect;
