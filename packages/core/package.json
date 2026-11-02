@@ -25,6 +25,10 @@
       "types": "./dist/statutory/index.d.ts",
       "default": "./dist/statutory/index.js"
     },
+    "./leave": {
+      "types": "./dist/leave/index.d.ts",
+      "default": "./dist/leave/index.js"
+    },
     "./validation": {
       "types": "./dist/validation/index.d.ts",
       "default": "./dist/validation/index.js"

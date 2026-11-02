@@ -192,6 +192,15 @@ export function addDays(date: IstDate, days: number): IstDate {
   return d.toISOString().slice(0, 10) as IstDate;
 }
 
+/**
+ * Day of the week, 0 = Sunday .. 6 = Saturday — the numbering a company's
+ * weekly-off setting is stored in. An IstDate has no time to shift, so the
+ * UTC weekday of its midnight is the IST weekday.
+ */
+export function weekdayOf(date: IstDate): number {
+  return new Date(`${date}T00:00:00Z`).getUTCDay();
+}
+
 /** Inclusive day count. 13th to 13th is 1 day, not 0. */
 export function daysBetweenInclusive(from: IstDate, to: IstDate): number {
   const a = new Date(`${from}T00:00:00Z`).getTime();
