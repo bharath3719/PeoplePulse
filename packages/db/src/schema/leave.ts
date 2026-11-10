@@ -31,9 +31,21 @@ export const leaveRequestStatus = pgEnum('leave_request_status', ['PENDING', 'AP
  *   ADJUSTMENT  a correction by HR, with its reason
  *   DEBIT       approved leave, taken off
  *   REVERSAL    approved leave cancelled, given back
+ *
+ * and, when a year is closed (LVE-02, D-25) — all but CARRY_IN in the year
+ * being closed, which they bring to zero:
+ *
+ *   CARRY_OUT   moved out of the closing year ...
+ *   CARRY_IN    ... and into the next, the same amount
+ *   ENCASHMENT  set aside for payroll to pay out (PAY-08)
+ *   LAPSE       beyond what the type carries or encashes, gone
+ *
+ * A carry is two entries rather than one so that each year's sum is that
+ * year's balance, with nothing reaching across years to read it.
  */
 export const leaveTxnKind = pgEnum('leave_txn_kind', [
   'OPENING', 'GRANT', 'ACCRUAL', 'ADJUSTMENT', 'DEBIT', 'REVERSAL',
+  'CARRY_OUT', 'CARRY_IN', 'ENCASHMENT', 'LAPSE',
 ]);
 
 /** A kind of leave a company offers (LVE-01). Seeded at signup from DEFAULT_LEAVE_TYPES. */
@@ -58,6 +70,17 @@ export const leaveType = pgTable('leave_type', {
   annualEntitlementHundredths: integer('annual_entitlement_hundredths').notNull().default(0),
   proRataOnJoin: boolean('pro_rata_on_join').notNull().default(true),
 
+  /**
+   * Year end (LVE-02, D-25; core leave/year-end.ts). The most of a closing
+   * balance that moves into the next year: 0 carries nothing, NULL has no
+   * limit. NULL is the default so that a type nobody has written a rule for
+   * keeps its days — the close can be previewed, and a lapse is the outcome
+   * that should be chosen, not fallen into.
+   */
+  carryForwardMaxHundredths: integer('carry_forward_max_hundredths'),
+  /** Of what does not carry, the most set aside for payroll to pay out. The rest lapses. */
+  encashMaxHundredths: integer('encash_max_hundredths').notNull().default(0),
+
   /** Inactive types take no new requests. Their history, and any balance, stays. */
   isActive: boolean('is_active').notNull().default(true),
 
@@ -69,6 +92,9 @@ export const leaveType = pgTable('leave_type', {
   index('leave_type_tenant_idx').on(t.tenantId),
   check('leave_type_entitlement_ck', sql`${t.annualEntitlementHundredths} between 0 and 36600`),
   check('leave_type_unpaid_no_accrual_ck', sql`${t.isPaid} or ${t.accrualFrequency} = 'NONE'`),
+  check('leave_type_carry_forward_ck', sql`${t.carryForwardMaxHundredths} is null or ${t.carryForwardMaxHundredths} between 0 and 36600`),
+  check('leave_type_encash_ck', sql`${t.encashMaxHundredths} between 0 and 36600`),
+  check('leave_type_unpaid_no_encash_ck', sql`${t.isPaid} or ${t.encashMaxHundredths} = 0`),
 ]);
 
 /**
@@ -173,10 +199,13 @@ export const leaveTxn = pgTable('leave_txn', {
     .where(sql`leave_request_id is not null`),
 
   check('leave_txn_nonzero_ck', sql`${t.daysHundredths} <> 0`),
+  // Compared as text: Postgres refuses a check that names an enum value added
+  // in the same transaction ("unsafe use of new value"), and the migrator runs
+  // every pending migration in one transaction.
   check('leave_txn_sign_ck', sql`
-    (${t.kind} = 'DEBIT' and ${t.daysHundredths} < 0)
-    or (${t.kind} in ('GRANT', 'ACCRUAL', 'REVERSAL') and ${t.daysHundredths} > 0)
-    or ${t.kind} in ('OPENING', 'ADJUSTMENT')
+    (${t.kind}::text in ('DEBIT', 'CARRY_OUT', 'ENCASHMENT', 'LAPSE') and ${t.daysHundredths} < 0)
+    or (${t.kind}::text in ('GRANT', 'ACCRUAL', 'REVERSAL', 'CARRY_IN') and ${t.daysHundredths} > 0)
+    or ${t.kind}::text in ('OPENING', 'ADJUSTMENT')
   `),
 ]);
 

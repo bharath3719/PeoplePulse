@@ -9,6 +9,7 @@ import {
 } from './span';
 import { monthlyAccrual, yearlyGrant, type Tenure } from './accrual';
 import { DEFAULT_LEAVE_TYPES } from './defaults';
+import { yearEndSplit, type YearEndRule } from './year-end';
 import { applyLeaveSchema, createLeaveTypeSchema, leaveAdjustmentSchema } from '../validation/leave';
 
 function span(
@@ -228,9 +229,71 @@ describe('the shared schemas', () => {
   });
 
   it('ships default leave types the schema itself would accept', () => {
-    for (const { annualEntitlement, ...t } of DEFAULT_LEAVE_TYPES) {
-      const parsed = createLeaveTypeSchema.safeParse({ ...t, annualEntitlementDays: toDays(annualEntitlement) });
+    for (const { annualEntitlement, carryForwardMax, encashMax, ...t } of DEFAULT_LEAVE_TYPES) {
+      const parsed = createLeaveTypeSchema.safeParse({
+        ...t,
+        annualEntitlementDays: toDays(annualEntitlement),
+        carryForwardMaxDays: carryForwardMax === null ? null : toDays(carryForwardMax),
+        encashMaxDays: toDays(encashMax),
+      });
       expect(parsed.success, t.code).toBe(true);
     }
+  });
+
+  it('will not let unpaid leave be encashed — it has no balance', () => {
+    expect(createLeaveTypeSchema.safeParse({
+      code: 'LWP', name: 'Leave without pay', isPaid: false, encashMaxDays: 5,
+    }).success).toBe(false);
+  });
+
+  it('keeps the days of a type nobody wrote a year-end rule for', () => {
+    const parsed = createLeaveTypeSchema.parse({ code: 'WFH', name: 'Work from home allowance' });
+    expect(parsed.carryForwardMaxDays).toBeNull();
+    expect(parsed.encashMaxDays).toBe(0);
+  });
+});
+
+describe('year end', () => {
+  const rule = (carry: number | null, encash = 0): YearEndRule => ({
+    carryForwardMax: carry === null ? null : fromDays(carry),
+    encashMax: fromDays(encash),
+  });
+  const split = (balance: number, r: YearEndRule, carried = 0, encashed = 0) => {
+    const s = yearEndSplit(fromDays(balance), r, { carried: fromDays(carried), encashed: fromDays(encashed) });
+    return [toDays(s.carry), toDays(s.encash), toDays(s.lapse)];
+  };
+
+  it('carries up to the limit, encashes the next part, and lapses the rest', () => {
+    expect(split(12, rule(5, 2))).toEqual([5, 2, 5]);
+  });
+
+  it('carries everything when there is no limit, and nothing when the limit is zero', () => {
+    expect(split(12.5, rule(null))).toEqual([12.5, 0, 0]);
+    expect(split(12, rule(0))).toEqual([0, 0, 12]);
+  });
+
+  it('carries before it encashes — a balance under the carry limit is kept as leave, not paid', () => {
+    expect(split(4, rule(5, 10))).toEqual([4, 0, 0]);
+  });
+
+  it('keeps fractions exact: a monthly balance carries to the hundredth', () => {
+    expect(split(10.83, rule(10, 0.5))).toEqual([10, 0.5, 0.33]);
+  });
+
+  it('fills only the room an earlier close of the same year left', () => {
+    // The first close carried 5 of a 5-day limit and encashed 1 of 2; then a
+    // cancellation gave 3 days back to the old year.
+    expect(split(3, rule(5, 2), 5, 1)).toEqual([0, 1, 2]);
+    expect(split(3, rule(null, 2), 5, 2)).toEqual([3, 0, 0]);
+  });
+
+  it('moves nothing from a zero or overdrawn balance — a deficit is HR\'s call, not carried', () => {
+    expect(split(0, rule(null))).toEqual([0, 0, 0]);
+    expect(split(-2, rule(null, 5))).toEqual([0, 0, 0]);
+  });
+
+  it('gives casual and sick leave no carry, and earned leave and maternity all of it, by default', () => {
+    const byCode = Object.fromEntries(DEFAULT_LEAVE_TYPES.map((t) => [t.code, t.carryForwardMax]));
+    expect(byCode).toMatchObject({ CL: 0, SL: 0, EL: null, ML: null });
   });
 });

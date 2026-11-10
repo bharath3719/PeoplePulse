@@ -94,6 +94,10 @@ const leaveTypeFields = {
   annualEntitlementDays: days.pipe(z.number().min(0).max(366)),
   proRataOnJoin: z.boolean(),
   dayCountBasis: z.enum(DAY_COUNT_BASES),
+  /** Year end (D-25): the most that carries into the next year. 0 lapses it all; null has no limit. */
+  carryForwardMaxDays: days.pipe(z.number().min(0).max(366)).nullable(),
+  /** Year end: of what does not carry, the most set aside for payroll to pay out. The rest lapses. */
+  encashMaxDays: days.pipe(z.number().min(0).max(366)),
 };
 
 /**
@@ -111,11 +115,18 @@ export const createLeaveTypeSchema = z.object({
   annualEntitlementDays: leaveTypeFields.annualEntitlementDays.default(0),
   proRataOnJoin: leaveTypeFields.proRataOnJoin.default(true),
   dayCountBasis: leaveTypeFields.dayCountBasis.default('WORKING_DAYS'),
+  // The column's default: a type nobody has written a year-end rule for keeps
+  // its days rather than losing them.
+  carryForwardMaxDays: leaveTypeFields.carryForwardMaxDays.default(null),
+  encashMaxDays: leaveTypeFields.encashMaxDays.default(0),
 }).strict().superRefine((type, ctx) => {
   if (!type.isPaid && type.accrualFrequency !== 'NONE') {
     // Unpaid leave has no balance — there is nothing to run out of — so there
     // is nothing to earn either.
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['accrualFrequency'], message: 'Unpaid leave does not accrue' });
+  }
+  if (!type.isPaid && type.encashMaxDays > 0) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['encashMaxDays'], message: 'Unpaid leave has no balance to encash' });
   }
   if (type.accrualFrequency !== 'NONE' && type.annualEntitlementDays === 0) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['annualEntitlementDays'], message: 'How many days a year?' });
@@ -179,3 +190,12 @@ export const postAccrualsSchema = z.object({
   through: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, 'A month, as YYYY-MM'),
 }).strict();
 export type PostAccrualsInput = z.infer<typeof postAccrualsSchema>;
+
+/**
+ * Close a leave year (LVE-02, D-25): carry forward, encash and lapse each
+ * balance by its type's rules. The same body previews it.
+ */
+export const leaveYearEndSchema = z.object({
+  year: z.number().int().min(2000).max(2100),
+}).strict();
+export type LeaveYearEndInput = z.infer<typeof leaveYearEndSchema>;
