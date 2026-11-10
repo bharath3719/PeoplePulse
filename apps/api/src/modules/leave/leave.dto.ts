@@ -1,5 +1,7 @@
 import { dayHundredths, toDays, type Session } from '@peoplepulse/core';
-import type { Holiday, LeaveType } from '@peoplepulse/db';
+import type { Holiday, LeaveTxn, LeaveType } from '@peoplepulse/db';
+
+type LeaveTxnKind = LeaveTxn['kind'];
 
 /**
  * The request schemas live in @peoplepulse/core (validation/leave.ts), shared
@@ -12,10 +14,10 @@ import type { Holiday, LeaveType } from '@peoplepulse/db';
 export {
   previewLeaveSchema, applyLeaveSchema, leaveDecisionSchema,
   createLeaveTypeSchema, updateLeaveTypeSchema, createHolidaySchema, leaveSettingsSchema,
-  leaveAdjustmentSchema, postAccrualsSchema,
+  leaveAdjustmentSchema, postAccrualsSchema, leaveYearEndSchema,
   type PreviewLeaveInput, type ApplyLeaveInput, type LeaveDecisionInput,
   type CreateLeaveTypeInput, type UpdateLeaveTypeInput, type CreateHolidayInput, type LeaveSettingsInput,
-  type LeaveAdjustmentInput, type PostAccrualsInput,
+  type LeaveAdjustmentInput, type PostAccrualsInput, type LeaveYearEndInput,
 } from '@peoplepulse/core';
 
 export interface LeaveTypeView {
@@ -28,6 +30,10 @@ export interface LeaveTypeView {
   accrualFrequency: LeaveType['accrualFrequency'];
   annualEntitlementDays: number;
   proRataOnJoin: boolean;
+  /** Year end: the most that carries into the next year. Null: no limit. */
+  carryForwardMaxDays: number | null;
+  /** Year end: of what does not carry, the most set aside to be paid out. */
+  encashMaxDays: number;
   isActive: boolean;
 }
 
@@ -42,6 +48,8 @@ export function toLeaveTypeView(row: LeaveType): LeaveTypeView {
     accrualFrequency: row.accrualFrequency,
     annualEntitlementDays: days(row.annualEntitlementHundredths),
     proRataOnJoin: row.proRataOnJoin,
+    carryForwardMaxDays: row.carryForwardMaxHundredths === null ? null : days(row.carryForwardMaxHundredths),
+    encashMaxDays: days(row.encashMaxHundredths),
     isActive: row.isActive,
   };
 }
@@ -101,10 +109,48 @@ export interface LeaveBalanceView {
   takenDays: number;
 }
 
+/**
+ * Why a balance was left where it was at year end, for HR to resolve:
+ *
+ *   PENDING_REQUESTS  leave in the year still waits for a decision
+ *   OVERDRAWN         the balance is below zero — recover, forgive or dock it
+ *   EXITED            they left during the year; full-and-final settles it
+ */
+export type YearEndSkipReason = 'PENDING_REQUESTS' | 'OVERDRAWN' | 'EXITED';
+
+/** What closing a leave year did — or, for a preview, would do. */
+export interface LeaveYearEndView {
+  year: number;
+  /** False while the year is still running: a preview then shows the close as if it ended today, every remaining credit posted. */
+  yearEnded: boolean;
+  /** True for a preview: nothing was written. */
+  dryRun: boolean;
+  /** Missing accruals and grants for the year, posted first. */
+  creditsPosted: number;
+  /** People whose balances moved. */
+  people: number;
+  types: {
+    leaveType: { id: string; code: string; name: string };
+    carryForwardMaxDays: number | null;
+    encashMaxDays: number;
+    people: number;
+    carriedDays: number;
+    encashedDays: number;
+    lapsedDays: number;
+  }[];
+  skipped: {
+    employee: { id: string; empCode: string; name: string };
+    leaveType: { id: string; code: string; name: string };
+    reason: YearEndSkipReason;
+    balanceDays: number;
+    pendingDays: number;
+  }[];
+}
+
 export interface LeaveLedgerEntryView {
   id: string;
   leaveType: { id: string; code: string; name: string };
-  kind: 'OPENING' | 'GRANT' | 'ACCRUAL' | 'ADJUSTMENT' | 'DEBIT' | 'REVERSAL';
+  kind: LeaveTxnKind;
   days: number;
   accrualPeriod: string | null;
   reason: string | null;

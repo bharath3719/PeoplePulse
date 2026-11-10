@@ -19,12 +19,29 @@ import {
  * (TR-02); `addDefaultTypes` writes whichever a company is missing.
  */
 export function defaultLeaveTypeRows(tenantId: string, createdBy: string | null = null): NewLeaveType[] {
-  return DEFAULT_LEAVE_TYPES.map(({ annualEntitlement, ...template }) => ({
+  return DEFAULT_LEAVE_TYPES.map(({ annualEntitlement, carryForwardMax, encashMax, ...template }) => ({
     ...template,
     tenantId,
     annualEntitlementHundredths: annualEntitlement,
+    carryForwardMaxHundredths: carryForwardMax,
+    encashMaxHundredths: encashMax,
     createdBy,
   }));
+}
+
+/** Days on the wire -> hundredths in the row, for the fields a leave type form sends. */
+function quantities(input: {
+  annualEntitlementDays: number | undefined;
+  carryForwardMaxDays: number | null | undefined;
+  encashMaxDays: number | undefined;
+}) {
+  return {
+    ...(input.annualEntitlementDays !== undefined && { annualEntitlementHundredths: fromDays(input.annualEntitlementDays) }),
+    ...(input.carryForwardMaxDays !== undefined && {
+      carryForwardMaxHundredths: input.carryForwardMaxDays === null ? null : fromDays(input.carryForwardMaxDays),
+    }),
+    ...(input.encashMaxDays !== undefined && { encashMaxHundredths: fromDays(input.encashMaxDays) }),
+  };
 }
 
 /**
@@ -50,11 +67,11 @@ export class LeavePolicyService {
       const [taken] = await tx.select({ id: leaveType.id }).from(leaveType).where(eq(leaveType.code, input.code));
       if (taken) throw validationFailed([{ field: 'code', message: `${input.code} is already a leave type here` }]);
 
-      const { annualEntitlementDays, ...fields } = input;
+      const { annualEntitlementDays, carryForwardMaxDays, encashMaxDays, ...fields } = input;
       const [created] = await tx.insert(leaveType).values({
         ...fields,
+        ...quantities({ annualEntitlementDays, carryForwardMaxDays, encashMaxDays }),
         tenantId: actor.tenantId,
-        annualEntitlementHundredths: fromDays(annualEntitlementDays),
         createdBy: actor.userId,
       }).returning();
 
@@ -71,11 +88,8 @@ export class LeavePolicyService {
       const [current] = await tx.select().from(leaveType).where(eq(leaveType.id, id)).for('update');
       if (!current) throw new NotFoundException('Leave type not found');
 
-      const { annualEntitlementDays, ...fields } = input;
-      const next = {
-        ...fields,
-        ...(annualEntitlementDays !== undefined && { annualEntitlementHundredths: fromDays(annualEntitlementDays) }),
-      };
+      const { annualEntitlementDays, carryForwardMaxDays, encashMaxDays, ...fields } = input;
+      const next = { ...fields, ...quantities({ annualEntitlementDays, carryForwardMaxDays, encashMaxDays }) };
 
       // The same rules createLeaveTypeSchema checks, against the type as it
       // will be — a PATCH carries only what changed.
@@ -86,6 +100,9 @@ export class LeavePolicyService {
       }
       if (frequency !== 'NONE' && entitlement === 0) {
         throw validationFailed([{ field: 'annualEntitlementDays', message: 'How many days a year?' }]);
+      }
+      if (!current.isPaid && (next.encashMaxHundredths ?? current.encashMaxHundredths) > 0) {
+        throw validationFailed([{ field: 'encashMaxDays', message: 'Unpaid leave has no balance to encash' }]);
       }
 
       const [updated] = await tx.update(leaveType)

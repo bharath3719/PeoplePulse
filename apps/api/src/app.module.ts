@@ -25,6 +25,7 @@ import { UserController } from './modules/user/user.controller';
 import { LeaveService } from './modules/leave/leave.service';
 import { LeaveLedgerService } from './modules/leave/leave-ledger.service';
 import { LeavePolicyService } from './modules/leave/leave-policy.service';
+import { LeaveYearEndService } from './modules/leave/leave-year-end.service';
 import { LeaveController } from './modules/leave/leave.controller';
 import { LeavePolicyController } from './modules/leave/leave-policy.controller';
 
@@ -41,7 +42,7 @@ import { LeavePolicyController } from './modules/leave/leave-policy.controller';
   providers: [
     AuthService, AuditService, PiiService, MailService, RateLimitService,
     TenantService, EmployeeService, EmployeeImportService, OrgService, UserService,
-    LeaveService, LeaveLedgerService, LeavePolicyService,
+    LeaveService, LeaveLedgerService, LeavePolicyService, LeaveYearEndService,
 
     /**
      * Both guards are GLOBAL, and the order matters.

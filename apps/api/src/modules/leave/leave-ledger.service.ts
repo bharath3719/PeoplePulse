@@ -1,23 +1,18 @@
 import { Injectable, Inject, ForbiddenException, NotFoundException } from '@nestjs/common';
-import { and, asc, eq, gte, isNull, lte, ne, or, sql } from 'drizzle-orm';
+import { and, asc, eq, or, sql } from 'drizzle-orm';
 import {
-  employee, leaveRequest, leaveTxn, leaveType, withTenant,
+  leaveRequest, leaveTxn, leaveType, withTenant,
   type Database, type LeaveTxn,
 } from '@peoplepulse/db';
-import {
-  dayHundredths, fromDays, istDate, lastDayOfMonth, monthlyAccrual, payrollMonth, payrollMonthOf, toIstDate,
-  yearlyGrant, type Actor, type LeaveYear, type Tenure,
-} from '@peoplepulse/core';
+import { fromDays, payrollMonth, payrollMonthOf, toIstDate, type Actor } from '@peoplepulse/core';
 import { DB } from '../../platform/database/database.module';
 import { AuditService } from '../../platform/audit/audit.service';
 import { validationFailed } from '../../platform/validation/zod.pipe';
 import { findVisibleEmployee, inYear, lockEmployee } from './leave-access';
+import { postCredits } from './leave-credits';
 import {
   days, type LeaveAdjustmentInput, type LeaveBalanceView, type LeaveLedgerEntryView, type PostAccrualsInput,
 } from './leave.dto';
-
-/** Postgres takes at most 65,535 bind parameters per statement; a ledger row uses 8. */
-const INSERT_BATCH = 1_000;
 
 /**
  * The leave ledger (TR-15): balances, the history behind them, and the two
@@ -96,10 +91,14 @@ export class LeaveLedgerService {
         .innerJoin(leaveType, eq(leaveType.id, leaveTxn.leaveTypeId))
         .leftJoin(leaveRequest, eq(leaveRequest.id, leaveTxn.leaveRequestId))
         .where(and(eq(leaveTxn.employeeId, employeeId), eq(leaveTxn.calendarYear, year)))
-        // One accrual run writes all its rows in one transaction, and `now()` is
-        // the transaction's start, so they share a timestamp. Type and period
-        // then put January before February.
-        .orderBy(asc(leaveTxn.createdAt), asc(leaveType.code), asc(leaveTxn.accrualPeriod), asc(leaveTxn.id));
+        // One accrual run or year-end close writes all its rows in one
+        // transaction, and `now()` is the transaction's start, so they share a
+        // timestamp. Type and period then put January before February, and the
+        // kind — in enum order — puts a close's carry before its encashment
+        // before its lapse.
+        .orderBy(
+          asc(leaveTxn.createdAt), asc(leaveType.code), asc(leaveTxn.accrualPeriod), asc(leaveTxn.kind), asc(leaveTxn.id),
+        );
 
       return rows.map((r) => toEntryView(r.txn, r.type, r.request));
     });
@@ -157,80 +156,20 @@ export class LeaveLedgerService {
   /**
    * Post the leave year's accruals and grants, up to and including `through`
    * (TR-15). Run by HR for now; the worker will run the same thing monthly.
-   *
-   * IDEMPOTENT, and catching up: every month of the year up to `through` that
-   * is missing a credit gets one, and none gets two — the ledger's unique index
-   * on (employee, type, period) turns a repeat into a no-op. So running October
-   * after forgetting September posts both, and running it twice posts once.
-   *
-   * Credits are computed from today's join and exit dates and today's
-   * entitlement. One already posted is not recomputed when either changes
-   * later (OPEN.md D-24).
+   * Idempotent and catching up — see `postCredits`.
    */
   async postAccruals(actor: Actor, input: PostAccrualsInput): Promise<{ through: string; posted: number; alreadyPosted: number }> {
     const through = payrollMonth(input.through);
     if (through > payrollMonthOf(toIstDate(new Date()))) {
       throw validationFailed([{ field: 'through', message: 'That month has not started yet' }]);
     }
-    const year = Number(through.slice(0, 4)) as LeaveYear;
-    const lastMonth = Number(through.slice(5, 7));
 
     return withTenant(this.db, actor.tenantId, async (tx) => {
-      const types = await tx.select().from(leaveType).where(and(
-        eq(leaveType.isActive, true),
-        eq(leaveType.isPaid, true),
-        ne(leaveType.accrualFrequency, 'NONE'),
-      ));
-
-      const people = await tx.select({ id: employee.id, joinDate: employee.joinDate, exitDate: employee.exitDate })
-        .from(employee)
-        .where(and(
-          isNull(employee.deletedAt),
-          lte(employee.joinDate, lastDayOfMonth(through)),
-          or(isNull(employee.exitDate), gte(employee.exitDate, `${year}-01-01`)),
-        ));
-
-      const rows: (typeof leaveTxn.$inferInsert)[] = [];
-      for (const person of people) {
-        const tenure: Tenure = {
-          joinDate: istDate(person.joinDate),
-          exitDate: person.exitDate ? istDate(person.exitDate) : null,
-        };
-        const credit = (kind: 'GRANT' | 'ACCRUAL', period: string, amount: number, typeId: string) => {
-          if (amount > 0) {
-            rows.push({
-              tenantId: actor.tenantId, employeeId: person.id, leaveTypeId: typeId,
-              calendarYear: year, kind, daysHundredths: amount, accrualPeriod: period, createdBy: actor.userId,
-            });
-          }
-        };
-
-        for (const type of types) {
-          const annual = dayHundredths(type.annualEntitlementHundredths);
-          if (type.accrualFrequency === 'YEARLY') {
-            credit('GRANT', String(year), yearlyGrant(annual, year, tenure, type.proRataOnJoin), type.id);
-          } else {
-            for (let m = 1; m <= lastMonth; m += 1) {
-              const month = payrollMonth(`${year}-${String(m).padStart(2, '0')}`);
-              credit('ACCRUAL', month, monthlyAccrual(annual, month, tenure), type.id);
-            }
-          }
-        }
-      }
-
-      let posted = 0;
-      for (let i = 0; i < rows.length; i += INSERT_BATCH) {
-        const inserted = await tx.insert(leaveTxn).values(rows.slice(i, i + INSERT_BATCH))
-          .onConflictDoNothing()
-          .returning({ id: leaveTxn.id });
-        posted += inserted.length;
-      }
-
+      const { posted, alreadyPosted } = await postCredits(tx, actor, through);
       await this.audit.record(tx, actor, {
-        entity: 'leave_accrual', action: 'POST',
-        after: { through, posted, alreadyPosted: rows.length - posted },
+        entity: 'leave_accrual', action: 'POST', after: { through, posted, alreadyPosted },
       });
-      return { through, posted, alreadyPosted: rows.length - posted };
+      return { through, posted, alreadyPosted };
     });
   }
 }

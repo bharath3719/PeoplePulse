@@ -6,10 +6,12 @@ import { actorOrThrow } from '../../platform/rbac/permission.guard';
 import { ZodBody, ZodValidationPipe } from '../../platform/validation/zod.pipe';
 import { LeaveService } from './leave.service';
 import { LeaveLedgerService } from './leave-ledger.service';
+import { LeaveYearEndService } from './leave-year-end.service';
 import {
-  applyLeaveSchema, leaveAdjustmentSchema, leaveDecisionSchema, postAccrualsSchema, previewLeaveSchema,
-  type ApplyLeaveInput, type LeaveAdjustmentInput, type LeaveDecisionInput, type PostAccrualsInput,
-  type PreviewLeaveInput,
+  applyLeaveSchema, leaveAdjustmentSchema, leaveDecisionSchema, leaveYearEndSchema, postAccrualsSchema,
+  previewLeaveSchema,
+  type ApplyLeaveInput, type LeaveAdjustmentInput, type LeaveDecisionInput, type LeaveYearEndInput,
+  type PostAccrualsInput, type PreviewLeaveInput,
 } from './leave.dto';
 import type { AuthedRequest } from '../../platform/auth/authed-request';
 
@@ -41,6 +43,7 @@ export class LeaveController {
   constructor(
     private readonly leave: LeaveService,
     private readonly ledger: LeaveLedgerService,
+    private readonly yearEnd: LeaveYearEndService,
   ) {}
 
   @Get('requests')
@@ -110,5 +113,21 @@ export class LeaveController {
   @HttpCode(200)
   postAccruals(@Req() req: AuthedRequest, @ZodBody(postAccrualsSchema) input: PostAccrualsInput) {
     return this.ledger.postAccruals(actorOrThrow(req), input);
+  }
+
+  /** What closing the year would carry, encash and lapse. Writes nothing. */
+  @Post('year-end/preview')
+  @RequirePermission('leave.manage')
+  @HttpCode(200)
+  previewYearEnd(@Req() req: AuthedRequest, @ZodBody(leaveYearEndSchema) input: LeaveYearEndInput) {
+    return this.yearEnd.preview(actorOrThrow(req), input);
+  }
+
+  /** Close a leave year (LVE-02). Re-runnable: a second close moves only what arrived since the first. */
+  @Post('year-end')
+  @RequirePermission('leave.manage')
+  @HttpCode(200)
+  closeYear(@Req() req: AuthedRequest, @ZodBody(leaveYearEndSchema) input: LeaveYearEndInput) {
+    return this.yearEnd.close(actorOrThrow(req), input);
   }
 }
