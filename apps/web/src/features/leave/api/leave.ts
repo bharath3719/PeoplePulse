@@ -2,8 +2,8 @@ import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tansta
 import {
   previewLeaveSchema,
   type ApplyLeaveInput, type CreateHolidayInput, type CreateLeaveTypeInput, type LeaveAdjustmentInput,
-  type LeaveDecisionInput, type LeaveSettingsInput, type PostAccrualsInput, type PreviewLeaveInput,
-  type Session, type UpdateLeaveTypeInput,
+  type LeaveDecisionInput, type LeaveSettingsInput, type LeaveYearEndInput, type PostAccrualsInput,
+  type PreviewLeaveInput, type Session, type UpdateLeaveTypeInput,
 } from '@peoplepulse/core';
 import { api } from '@/lib/api';
 
@@ -22,6 +22,10 @@ export interface LeaveType {
   accrualFrequency: 'NONE' | 'MONTHLY' | 'YEARLY';
   annualEntitlementDays: number;
   proRataOnJoin: boolean;
+  /** Year end: the most that carries into the next year. Null: no limit. */
+  carryForwardMaxDays: number | null;
+  /** Year end: of what does not carry, the most set aside to be paid out. */
+  encashMaxDays: number;
   isActive: boolean;
 }
 
@@ -71,10 +75,41 @@ export interface LeaveBalance {
   takenDays: number;
 }
 
+/** Why a balance was left where it was at year end, for HR to resolve. */
+export type YearEndSkipReason = 'PENDING_REQUESTS' | 'OVERDRAWN' | 'EXITED';
+
+/** What closing a leave year did — or, for a preview, would do. */
+export interface LeaveYearEnd {
+  year: number;
+  /** False while the year is still running: the preview is as if it ended today. */
+  yearEnded: boolean;
+  dryRun: boolean;
+  creditsPosted: number;
+  people: number;
+  types: {
+    leaveType: { id: string; code: string; name: string };
+    carryForwardMaxDays: number | null;
+    encashMaxDays: number;
+    people: number;
+    carriedDays: number;
+    encashedDays: number;
+    lapsedDays: number;
+  }[];
+  skipped: {
+    employee: { id: string; empCode: string; name: string };
+    leaveType: { id: string; code: string; name: string };
+    reason: YearEndSkipReason;
+    balanceDays: number;
+    pendingDays: number;
+  }[];
+}
+
 export interface LedgerEntry {
   id: string;
   leaveType: { id: string; code: string; name: string };
-  kind: 'OPENING' | 'GRANT' | 'ACCRUAL' | 'ADJUSTMENT' | 'DEBIT' | 'REVERSAL';
+  kind:
+    | 'OPENING' | 'GRANT' | 'ACCRUAL' | 'ADJUSTMENT' | 'DEBIT' | 'REVERSAL'
+    | 'CARRY_OUT' | 'CARRY_IN' | 'ENCASHMENT' | 'LAPSE';
   days: number;
   accrualPeriod: string | null;
   reason: string | null;
@@ -133,6 +168,17 @@ export const useUpdateLeaveSettings = () =>
 export const usePostAccruals = () =>
   useLeaveMutation((input: PostAccrualsInput) =>
     api.post<{ through: string; posted: number; alreadyPosted: number }>('/leave/accruals', input));
+
+/**
+ * What closing a year would do. A mutation, not a query: it runs the close and
+ * rolls it back, locking everyone's leave while it does — asked for, not
+ * fetched on every visit. Writes nothing, so it invalidates nothing.
+ */
+export const usePreviewYearEnd = () =>
+  useMutation({ mutationFn: (input: LeaveYearEndInput) => api.post<LeaveYearEnd>('/leave/year-end/preview', input) });
+
+export const useCloseYear = () =>
+  useLeaveMutation((input: LeaveYearEndInput) => api.post<LeaveYearEnd>('/leave/year-end', input));
 
 // --- Requests --------------------------------------------------------------
 

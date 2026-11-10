@@ -6,13 +6,15 @@ import { Field } from '@/components/ui/field';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { HolidaysSection } from './HolidaysSection';
 import { LeaveTypesSection } from './LeaveTypesSection';
+import { YearEndSection } from './YearEndSection';
 import { useLeaveSettings, usePostAccruals, useUpdateLeaveSettings } from './api/leave';
 import { WEEKDAYS, problem } from './format';
 
 /**
- * Leave policy (`leave.manage`): the types on offer, holidays, weekly offs, and
- * posting the year's credits. The route is reachable by anyone who types it;
- * every change on it is refused by the API without the permission.
+ * Leave policy (`leave.manage`): the types on offer, holidays, weekly offs,
+ * posting the year's credits, and closing a year. The route is reachable by
+ * anyone who types it; every change on it is refused by the API without the
+ * permission.
  */
 export function LeaveSettings() {
   return (
@@ -25,6 +27,7 @@ export function LeaveSettings() {
       <WeeklyOffs />
       <HolidaysSection />
       <PostAccruals />
+      <YearEndSection />
     </div>
   );
 }

@@ -14,7 +14,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import {
   useAddDefaultLeaveTypes, useCreateLeaveType, useLeaveTypes, useUpdateLeaveType, type LeaveType,
 } from './api/leave';
-import { showDays } from './format';
+import { describeYearEnd, showDays } from './format';
 
 /** The leave types this company offers (LVE-01). */
 export function LeaveTypesSection() {
@@ -58,7 +58,7 @@ export function LeaveTypesSection() {
           <table className="w-full text-sm">
             <thead className="border-b bg-muted/50">
               <tr>
-                {['Type', 'Earned', 'Counts', ''].map((h, i) => (
+                {['Type', 'Earned', 'Counts', 'At year end', ''].map((h, i) => (
                   <th key={i} className="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-muted-foreground">{h}</th>
                 ))}
               </tr>
@@ -77,6 +77,7 @@ export function LeaveTypesSection() {
                     {t.dayCountBasis === 'CALENDAR_DAYS' ? 'calendar days' : 'working days'}
                     {t.allowsHalfDay ? ', half days' : ''}
                   </td>
+                  <td className="px-3 py-2">{t.isPaid ? describeYearEnd(t) : '—'}</td>
                   <td className="px-3 py-2 text-right">
                     <Button size="sm" variant="ghost" onClick={() => setEditingId(t.id)}>Edit</Button>
                   </td>
@@ -97,16 +98,35 @@ function describeAccrual(t: LeaveType): string {
   return `${showDays(t.annualEntitlementDays)} ${per}${t.proRataOnJoin ? ', pro-rata' : ''}`;
 }
 
+/** How much of a balance carries into the next year: nothing, up to a limit, or all of it. */
+type CarryMode = 'NONE' | 'LIMIT' | 'ALL';
+
+function carryModeOf(type: LeaveType | undefined): CarryMode {
+  // A new type carries everything until HR says otherwise — the server's default too.
+  if (!type || type.carryForwardMaxDays === null) return 'ALL';
+  return type.carryForwardMaxDays === 0 ? 'NONE' : 'LIMIT';
+}
+
 /** Create a type, or — given one — edit it. Code and paid/unpaid are fixed once created. */
 function LeaveTypeForm({ type, onDone }: { type?: LeaveType; onDone: () => void }) {
   const create = useCreateLeaveType();
   const update = useUpdateLeaveType(type?.id ?? '');
   const mutation = type ? update : create;
   const [errors, setErrors] = useState<Record<string, string>>({});
+  const [carry, setCarry] = useState<CarryMode>(carryModeOf(type));
+  // Unpaid leave has no balance, so nothing to carry or encash.
+  const hasYearEnd = !type || type.isPaid;
 
   function submit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     const f = new FormData(e.currentTarget);
+    const yearEnd = hasYearEnd
+      ? {
+        carryForwardMaxDays: carry === 'ALL' ? null : carry === 'NONE' ? 0 : Number(f.get('carryForwardMaxDays') || 0),
+        // Carrying everything leaves nothing to encash.
+        encashMaxDays: carry === 'ALL' ? 0 : Number(f.get('encashMaxDays') || 0),
+      }
+      : {};
     const common = {
       name: String(f.get('name') ?? ''),
       accrualFrequency: String(f.get('accrualFrequency')) as AccrualFrequency,
@@ -114,6 +134,7 @@ function LeaveTypeForm({ type, onDone }: { type?: LeaveType; onDone: () => void 
       dayCountBasis: String(f.get('dayCountBasis')) as DayCountBasis,
       allowsHalfDay: f.get('allowsHalfDay') === 'on',
       proRataOnJoin: f.get('proRataOnJoin') === 'on',
+      ...yearEnd,
     };
 
     // The same schemas the API validates with, so the browser cannot accept
@@ -173,6 +194,36 @@ function LeaveTypeForm({ type, onDone }: { type?: LeaveType; onDone: () => void 
           </Select>
         </Field>
       </div>
+      {hasYearEnd && (
+        <fieldset className="space-y-2">
+          <legend className="text-sm font-medium">At year end</legend>
+          <div className="grid gap-4 sm:grid-cols-3">
+            <Field label="Carry into next year">
+              <Select value={carry} onChange={(e) => setCarry(e.target.value as CarryMode)}>
+                <option value="NONE">Nothing</option>
+                <option value="LIMIT">Up to a limit</option>
+                <option value="ALL">Everything</option>
+              </Select>
+            </Field>
+            {carry === 'LIMIT' && (
+              <Field label="Carry at most (days)" error={errors['carryForwardMaxDays']}>
+                <Input
+                  name="carryForwardMaxDays" type="number" step="0.01" min="0"
+                  defaultValue={type?.carryForwardMaxDays ?? 0}
+                />
+              </Field>
+            )}
+            {carry !== 'ALL' && (
+              <Field
+                label="Encash at most (days)" error={errors['encashMaxDays']}
+                hint="Of what does not carry. Anything left after that lapses."
+              >
+                <Input name="encashMaxDays" type="number" step="0.01" min="0" defaultValue={type?.encashMaxDays ?? 0} />
+              </Field>
+            )}
+          </div>
+        </fieldset>
+      )}
       <div className="flex flex-wrap gap-x-6 gap-y-2 text-sm">
         {!type && <Check name="isPaid" label="Paid (has a balance)" defaultChecked />}
         <Check name="allowsHalfDay" label="Half days allowed" defaultChecked={type?.allowsHalfDay ?? true} />

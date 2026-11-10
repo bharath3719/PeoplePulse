@@ -52,7 +52,23 @@ export const ENTRY_KINDS: Record<string, string> = {
   ADJUSTMENT: 'Adjustment',
   DEBIT: 'Leave taken',
   REVERSAL: 'Leave cancelled',
+  // Year end, in the carried-forward / brought-forward of a ledger book.
+  CARRY_OUT: 'Carried forward',
+  CARRY_IN: 'Brought forward',
+  ENCASHMENT: 'To be encashed',
+  LAPSE: 'Lapsed',
 };
+
+/** A leave type's year-end rule in a few words: "carries up to 30 days, encashes up to 5 days, the rest lapses". */
+export function describeYearEnd(rule: { carryForwardMaxDays: number | null; encashMaxDays: number }): string {
+  // Carried in full leaves nothing to encash or lapse.
+  if (rule.carryForwardMaxDays === null) return 'carries in full';
+  const parts = [
+    rule.carryForwardMaxDays > 0 && `carries up to ${showDays(rule.carryForwardMaxDays)}`,
+    rule.encashMaxDays > 0 && `encashes up to ${showDays(rule.encashMaxDays)}`,
+  ].filter(Boolean);
+  return parts.length === 0 ? 'lapses' : `${parts.join(', ')}, the rest lapses`;
+}
 
 /** The sentence to show for a failed call: a field's message if the API blamed one, else its own. */
 export function problem(error: Error): string {
