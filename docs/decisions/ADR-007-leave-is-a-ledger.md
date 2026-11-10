@@ -57,9 +57,10 @@ come from which.
 
 ## Consequences
 
-- **Year-end processing is due before 1 January 2027** ([OPEN.md D-25](OPEN.md)). Balances are per
-  calendar year, so until carry-forward exists, every balance starts the new year at zero — everything
-  lapses, including leave that should carry.
+- **Year-end processing was due before 1 January 2027** ([OPEN.md D-25](OPEN.md)). Balances are per
+  calendar year, so until carry-forward existed, every balance would have started the new year at zero.
+  Built in [ADR-008](ADR-008-closing-a-leave-year.md): carry, encash and lapse as ledger entries, by
+  per-type rules.
 - Changes to policy apply forward. A holiday added after a request does not re-price it (D-23); a
   corrected join date does not re-post accruals (D-24). Both are visible in the ledger, and both need
   a deliberate re-pricing action rather than a silent recompute.

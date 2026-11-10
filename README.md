@@ -2,7 +2,7 @@
 
 Cloud HRMS for Indian SMBs (10–200 employees). Core HR, Attendance, Leave, India-statutory Payroll, ATS, Performance, and L&D in one multi-tenant platform.
 
-**Status: Slice 1 is built and runs end to end, and Slice 2 — Leave — is built.** Company signup → login → two-factor authentication → inviting users → managing their access (roles, removal, two-factor reset) → company switcher → employee master (create, list, detail, edit, bank details, Excel import) → org structure → company settings, on an RLS-isolated tenant. Then leave: types, holidays, weekly offs, accruals, apply → approve → cancel, on an append-only ledger; employees sign in as themselves. 288 tests green.
+**Status: Slice 1 is built and runs end to end, and Slice 2 — Leave — is built.** Company signup → login → two-factor authentication → inviting users → managing their access (roles, removal, two-factor reset) → company switcher → employee master (create, list, detail, edit, bank details, Excel import) → org structure → company settings, on an RLS-isolated tenant. Then leave: types, holidays, weekly offs, accruals, apply → approve → cancel, and closing the year (carry forward, encash, lapse), on an append-only ledger; employees sign in as themselves. 311 tests green.
 
 ---
 
@@ -16,18 +16,18 @@ Cloud HRMS for Indian SMBs (10–200 employees). Core HR, Attendance, Leave, Ind
 
 ## Architecture
 
-Two deployables, sharing domain packages in a monorepo:
+Two deployables, sharing domain packages in a monorepo. The ones marked *planned* do not exist yet:
 
 ```
 apps/
   api/       NestJS — modular monolith, one module per bounded context
-  worker/    BullMQ — payroll runs, nightly attendance derivation, accruals, PDFs
+  worker/    BullMQ — payroll runs, nightly attendance derivation, accruals, PDFs   (planned)
   web/       React + Vite + shadcn/ui + TanStack Query/Table — HR console + ESS portal
-  mobile/    React Native, Android-first — punch, leave, payslips, approvals
+  mobile/    React Native, Android-first — punch, leave, payslips, approvals       (planned)
 packages/
-  payroll/   Statutory engine (PF/ESI/PT/LWF/TDS/gratuity) — pure, no I/O
+  payroll/   Statutory engine (PF/ESI/PT/LWF/TDS/gratuity) — pure, no I/O          (planned)
   db/        Schema, migrations, RLS policies
-  core/      Tenant context, RBAC, audit trail
+  core/      Tenant context, RBAC, audit trail, leave maths, shared validation
 ```
 
 PostgreSQL 16 with **row-level security** as the tenant-isolation backstop. Redis for queues and cache. S3-compatible object storage. Everything hosted in an Indian region (NFR-06).
@@ -46,8 +46,9 @@ Two rules that are not negotiable, because violating either is a compliance defe
 - [ADR-005](docs/decisions/ADR-005-data-layer.md) — money, RLS-under-pooler, ORM, auth. **Closes the last blockers on Slice 1.**
 - [ADR-006](docs/decisions/ADR-006-rls-requires-an-unprivileged-role.md) — **RLS is worthless if the app connects as a superuser.** Caught a live cross-tenant write.
 - [ADR-007](docs/decisions/ADR-007-leave-is-a-ledger.md) — Leave before Attendance; **a balance is the sum of an append-only ledger, in integer hundredths of a day.**
+- [ADR-008](docs/decisions/ADR-008-closing-a-leave-year.md) — closing a leave year: **carry → encash → lapse by per-type limits**, as a re-runnable close that reports what it will not guess at.
 - [ENGINEERING-STANDARDS.md](docs/ENGINEERING-STANDARDS.md) — RBAC by permission (never by role), structure, styling, testing.
-- [OPEN.md](docs/decisions/OPEN.md) — **everything still undecided**, grouped by what it blocks. Five items block Slice 1.
+- [OPEN.md](docs/decisions/OPEN.md) — **everything still undecided**, grouped by what it blocks. Nothing blocks the slices built so far; the next gate is the first deploy (D-6).
 
 ## Running it
 
@@ -55,7 +56,7 @@ Two rules that are not negotiable, because violating either is a compliance defe
 npm install
 cp .env.example .env          # fill in your Postgres password
 npm run db:migrate            # schema + RLS policies + the peoplepulse_app role
-npm test                      # 288 tests, incl. 15 tenant-isolation + 29 leave + 22 employee-edit/delete + 5 switcher + 42 invitation/access/employee-link + 21 sign-in/MFA + 3 mail + 5 rate-limit, on a real DB
+npm test                      # 311 tests, incl. 15 tenant-isolation + 29 leave + 14 year-end + 22 employee-edit/delete + 5 switcher + 42 invitation/access/employee-link + 21 sign-in/MFA + 3 mail + 5 rate-limit, on a real DB
 
 npm run dev:api               # :3000/api/v1
 npm run dev:web               # :5173, proxies /api to the API
@@ -261,14 +262,33 @@ Employee; otherwise a second inbox of their own, linked to the founder, would re
 One login per employee, never yourself, re-checked at accept and on role changes, and read from the
 membership on every request so unlinking holds at once.
 
+**Closing a leave year** (Leave policy → Close the leave year; [ADR-008](docs/decisions/ADR-008-closing-a-leave-year.md))
+moves what is left of each balance out of the old year by its type's two rules. It carries up to the
+carry-forward limit into the next year, sets up to the encashment limit aside for payroll, and lapses the
+rest. Each part is a ledger entry (`CARRY_OUT` / `CARRY_IN`, `ENCASHMENT`, `LAPSE`) whose reason names the
+rule, so the History button still adds up. By default CL and SL lapse, and EL and maternity carry in full.
+Four rules:
+
+- **Preview, then close.** The preview runs the same close and rolls it back, so it cannot disagree with
+  it. It works mid-year; the close itself waits until the year has ended in IST.
+- **It posts the year's missing credits first,** so December's earned leave does not arrive in a year that
+  has already been emptied.
+- **It can be run again and converges.** It moves whatever the year still holds, within the room the limits
+  have left, so a second close moves nothing and a late correction is swept by the next one. Every employee
+  row is locked first, as every leave change does; the race test carries twice without that lock.
+- **It does not guess.** A balance with leave awaiting a decision, an overdrawn balance, and the balance of
+  someone who left during the year are each left where they are and listed, for HR or full-and-final
+  settlement to deal with.
+
 ### Still open in Slice 2
 
-See [OPEN.md](docs/decisions/OPEN.md) §"Raised by Slice 2". One is urgent:
+See [OPEN.md](docs/decisions/OPEN.md) §"Raised by Slice 2":
 
-- **Year-end carry-forward is due by 31 December 2026 (D-25).** Without it every balance, earned leave
-  included, starts 2027 at zero.
 - **Who may roll out self-service** (D-26): with the seeded roles, Super Admin or Payroll Admin — not an
   HR Admin who cannot see pay. The Product Lead should confirm that trade-off before pilots.
+- **Year-end rules for companies created before 9-Nov-2026** default to carrying everything, CL and SL
+  included, until HR sets them (D-25). The EL accumulation limit awaits the SME, and encashment's rate and
+  payout wait for Phase 2 payroll.
 
 Also: one approval level, not LVE-03's two (D-20); default entitlements awaiting the SME (D-21); no
 optional holidays (D-22); a holiday added after a request does not re-price it (D-23).

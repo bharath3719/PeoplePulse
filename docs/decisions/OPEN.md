@@ -164,7 +164,7 @@ The JWT carries the **active** `tenant_id`; switching company re-issues the toke
 
 **Most employees will still have exactly one `user_tenant` row.** The join table costs them nothing.
 
-**Built (6-Oct-2026):** the company switcher, and invitations — the only way a second company reaches a login. An inviter grants only roles whose permissions they hold. Invitations are not yet emailed; the inviter sends the link.
+**Built (6-Oct-2026):** the company switcher, and invitations — the only way a second company reaches a login. An inviter grants only roles whose permissions they hold. Invitations are emailed to the invitee (since `bf2501b`); the link is never shown to the inviter.
 
 ### ~~D-17 — Timezone and financial-year conventions~~ ✅ **RESOLVED**
 
@@ -205,7 +205,7 @@ This is what NFR-08 requires — statutory records held **≥ 8 years** — whil
 ## 🟠 Raised by Slice 2 — Leave (2-Nov-2026)
 
 Leave was built first of the two Phase 1 modules, for the reasons in [ADR-007](ADR-007-leave-is-a-ledger.md).
-These came up building it. D-25 is 🔴 because of a date.
+These came up building it. D-25, the one with a date, is built.
 
 ### ~~D-26 — A login cannot be linked to an employee record~~ ✅ **BUILT 3-Nov-2026**
 
@@ -230,12 +230,22 @@ employee now comes from the membership on every request, not the token, so unlin
 **Still open:** a founder who is also an employee needs a second admin to link them; and nothing yet
 re-checks links when a role's permissions are edited (custom roles, ADM-01, are not editable yet).
 
-### D-25 — Leave year-end: carry-forward, lapse, encashment (LVE-02) 🔴 **due 31-Dec-2026**
+### ~~D-25 — Leave year-end: carry-forward, lapse, encashment (LVE-02)~~ ✅ **BUILT 9-Nov-2026 — see [ADR-008](ADR-008-closing-a-leave-year.md)**
 
-Balances are per calendar year (D-17). With no year-end run, **on 1 January every balance starts at
-zero** — CL lapsing is right, EL lapsing is not. Needs per-type rules (carry-forward cap, lapse,
-encashable days and at what rate) and a run that writes CARRY_FORWARD / LAPSE entries to the ledger.
-Encashment is money, so its rate is a Payroll Admin decision and its payout waits for Phase 2.
+Each paid type has a carry-forward limit (none, up to N days, or no limit) and an encashment limit. A
+close, in Leave policy, carries what fits, encashes the next part and lapses the rest, as ledger entries
+with the rule in each one's reason. It is previewable, re-runnable, and posts the year's missing credits
+first. It leaves alone, and lists, any balance with leave awaiting a decision, any that is overdrawn, and
+anyone who left during the year. Defaults: CL and SL lapse; EL and ML carry in full.
+
+**Still open:**
+- **The SME's EL accumulation limit** (with D-21). EL carries in full until it is set. Carrying more than the
+  Act requires is lawful; lapsing what it protects is not.
+- **Encashment's rate and payout** are the Payroll Admin's and Phase 2's (PAY-08). Until then an `ENCASHMENT`
+  entry is a record of days owed, which the company pays outside PeoplePulse.
+- **Companies created before 9-Nov-2026 carry every existing type in full, CL and SL included,** until HR sets
+  their rules (no data backfill — ADR-008 says why). The preview shows it before anything moves.
+- **Run by hand.** The worker can run the same close on 1 January when it exists; the close is idempotent.
 
 ### D-20 — How many approval levels? (LVE-03)
 
@@ -298,3 +308,4 @@ today); and the worker posting accruals on a schedule (the endpoint is idempoten
 | D-3 | ORM | **Drizzle.** Prove `SET LOCAL` survives the pool in week 1. | [ADR-005](ADR-005-data-layer.md) |
 | D-5 | Auth | **Build** per TR-50 — Argon2id, JWT, TOTP MFA. | [ADR-005](ADR-005-data-layer.md) |
 | — | Phase 1 order; leave model | **Leave before Attendance.** Append-only ledger in **integer hundredths of a day**; debited at approval; half days as sessions. | [ADR-007](ADR-007-leave-is-a-ledger.md) |
+| D-25 | Leave year-end | Per-type **carry → encash → lapse** limits; a re-runnable, previewable close that writes ledger entries and reports what it would not guess at. | [ADR-008](ADR-008-closing-a-leave-year.md) |
