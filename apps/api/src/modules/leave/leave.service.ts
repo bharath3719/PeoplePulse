@@ -264,7 +264,7 @@ export class LeaveService {
     }
 
     const year = leaveYearOfSpan(span);
-    const calendar = await workingCalendarFor(tx, actor.tenantId, me.locationId, year);
+    const calendar = await workingCalendarFor(tx, actor.tenantId, me, year);
     const daysHundredths = countLeaveDays(span, type.dayCountBasis, calendar);
     if (daysHundredths === 0) {
       throw validationFailed([{ field: 'startDate', message: 'Those days are all weekly offs or holidays — there is no leave to take' }]);

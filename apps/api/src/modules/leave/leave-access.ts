@@ -8,6 +8,7 @@ import {
   can, dayHundredths, resolveScope, SCOPES,
   type Actor, type DayHundredths, type LeaveYear, type WorkingCalendar,
 } from '@peoplepulse/core';
+import { rosterRows } from '../attendance/attendance-access';
 
 /**
  * Who may see — and decide — whose leave. Shared by every leave service so the
@@ -95,10 +96,16 @@ function notAnEmployee(): ForbiddenException {
   });
 }
 
-/** The days a person was not due at work anyway, for one leave year. */
+/**
+ * The days a person was not due at work anyway, for one leave year: their
+ * roster's weekly offs where it covers a date (ATT-04), the company's where it
+ * does not, and the holidays at their location. Attendance reads the same
+ * roster, so leave and attendance agree on which days are off.
+ */
 export async function workingCalendarFor(
-  tx: TenantDatabase, tenantId: string, locationId: string | null, year: LeaveYear,
+  tx: TenantDatabase, tenantId: string, subject: Pick<Employee, 'id' | 'locationId'>, year: LeaveYear,
 ): Promise<WorkingCalendar> {
+  const { locationId } = subject;
   const [company] = await tx.select({ weeklyOffDays: tenant.weeklyOffDays })
     .from(tenant).where(eq(tenant.id, tenantId));
 
@@ -110,6 +117,7 @@ export async function workingCalendarFor(
 
   return {
     weeklyOffDays: company?.weeklyOffDays ?? [0],
+    roster: await rosterRows(tx, subject.id, `${year}-12-31`),
     holidays: new Set(rows.map((r) => r.date)),
   };
 }

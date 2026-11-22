@@ -1,7 +1,7 @@
 import { Injectable, Inject, ConflictException } from '@nestjs/common';
 import { eq, sql } from 'drizzle-orm';
 import {
-  tenant, user, userTenant, role, rolePermission, userRole, leaveType,
+  tenant, user, userTenant, role, rolePermission, userRole, leaveType, shift,
   withoutTenantIsolation, withTenant, type Database,
 } from '@peoplepulse/db';
 import { SYSTEM_ROLES, OWNER_ROLE_KEY, type Actor } from '@peoplepulse/core';
@@ -9,6 +9,7 @@ import { DB } from '../../platform/database/database.module';
 import { AuthService } from '../../platform/auth/auth.service';
 import { AuditService } from '../../platform/audit/audit.service';
 import { defaultLeaveTypeRows } from '../leave/leave-policy.service';
+import { defaultShiftRow } from '../attendance/shift.service';
 
 export interface SignupInput {
   companyName: string;
@@ -122,6 +123,8 @@ export class TenantService {
 
         // The standard leave types, as data HR edits (TR-02) — like the roles.
         await tx.insert(leaveType).values(defaultLeaveTypeRows(tenantId, userId));
+        // And a default shift, so everyone has hours from the first punch.
+        await tx.insert(shift).values(defaultShiftRow(tenantId, userId));
 
         return { tenantId, userId };
       });

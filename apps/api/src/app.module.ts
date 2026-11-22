@@ -28,6 +28,11 @@ import { LeavePolicyService } from './modules/leave/leave-policy.service';
 import { LeaveYearEndService } from './modules/leave/leave-year-end.service';
 import { LeaveController } from './modules/leave/leave.controller';
 import { LeavePolicyController } from './modules/leave/leave-policy.controller';
+import { ShiftService } from './modules/attendance/shift.service';
+import { RosterService } from './modules/attendance/roster.service';
+import { PunchService } from './modules/attendance/punch.service';
+import { ShiftController } from './modules/attendance/shift.controller';
+import { AttendanceController } from './modules/attendance/attendance.controller';
 
 @Module({
   imports: [
@@ -37,12 +42,13 @@ import { LeavePolicyController } from './modules/leave/leave-policy.controller';
   ],
   controllers: [
     AuthController, TenantController, EmployeeController, OrgController, UserController,
-    LeaveController, LeavePolicyController,
+    LeaveController, LeavePolicyController, ShiftController, AttendanceController,
   ],
   providers: [
     AuthService, AuditService, PiiService, MailService, RateLimitService,
     TenantService, EmployeeService, EmployeeImportService, OrgService, UserService,
     LeaveService, LeaveLedgerService, LeavePolicyService, LeaveYearEndService,
+    ShiftService, RosterService, PunchService,
 
     /**
      * Both guards are GLOBAL, and the order matters.
