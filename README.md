@@ -2,7 +2,7 @@
 
 Cloud HRMS for Indian SMBs (10–200 employees). Core HR, Attendance, Leave, India-statutory Payroll, ATS, Performance, and L&D in one multi-tenant platform.
 
-**Status: Slice 1 is built and runs end to end, and Slice 2 — Leave — is built.** Company signup → login → two-factor authentication → inviting users → managing their access (roles, removal, two-factor reset) → company switcher → employee master (create, list, detail, edit, bank details, Excel import) → org structure → company settings, on an RLS-isolated tenant. Then leave: types, holidays, weekly offs, accruals, apply → approve → cancel, and closing the year (carry forward, encash, lapse), on an append-only ledger; employees sign in as themselves. 311 tests green.
+**Status: Slice 1 is built and runs end to end, and Slice 2 — Leave — is built.** Company signup → login → two-factor authentication → inviting users → managing their access (roles, removal, two-factor reset) → company switcher → employee master (create, list, detail, edit, bank details, Excel import) → org structure → company settings, on an RLS-isolated tenant. Then leave: types, holidays, weekly offs, accruals, apply → approve → cancel, and closing the year (carry forward, encash, lapse), on an append-only ledger; employees sign in as themselves. **Slice 3 — Attendance — has begun:** shifts, rosters and punching in and out from the browser. 350 tests green.
 
 ---
 
@@ -47,6 +47,7 @@ Two rules that are not negotiable, because violating either is a compliance defe
 - [ADR-006](docs/decisions/ADR-006-rls-requires-an-unprivileged-role.md) — **RLS is worthless if the app connects as a superuser.** Caught a live cross-tenant write.
 - [ADR-007](docs/decisions/ADR-007-leave-is-a-ledger.md) — Leave before Attendance; **a balance is the sum of an append-only ledger, in integer hundredths of a day.**
 - [ADR-008](docs/decisions/ADR-008-closing-a-leave-year.md) — closing a leave year: **carry → encash → lapse by per-type limits**, as a re-runnable close that reports what it will not guess at.
+- [ADR-009](docs/decisions/ADR-009-shifts-rosters-punches.md) — shifts, rosters, punches: **a punch is append-only and timed by the server, and belongs to the nearer shift**; a roster's weekly offs are leave's too.
 - [ENGINEERING-STANDARDS.md](docs/ENGINEERING-STANDARDS.md) — RBAC by permission (never by role), structure, styling, testing.
 - [OPEN.md](docs/decisions/OPEN.md) — **everything still undecided**, grouped by what it blocks. Nothing blocks the slices built so far; the next gate is the first deploy (D-6).
 
@@ -56,7 +57,7 @@ Two rules that are not negotiable, because violating either is a compliance defe
 npm install
 cp .env.example .env          # fill in your Postgres password
 npm run db:migrate            # schema + RLS policies + the peoplepulse_app role
-npm test                      # 311 tests, incl. 15 tenant-isolation + 29 leave + 14 year-end + 22 employee-edit/delete + 5 switcher + 42 invitation/access/employee-link + 21 sign-in/MFA + 3 mail + 5 rate-limit, on a real DB
+npm test                      # 350 tests, incl. 16 tenant-isolation + 29 leave + 14 year-end + 22 attendance + 22 employee-edit/delete + 5 switcher + 42 invitation/access/employee-link + 21 sign-in/MFA + 3 mail + 5 rate-limit, on a real DB
 
 npm run dev:api               # :3000/api/v1
 npm run dev:web               # :5173, proxies /api to the API
@@ -246,7 +247,8 @@ Six rules:
   own leave is choosing not to be docked pay.
 - **A manager decides for their direct reports**; anyone with `leave.view.all` + `leave.approve` for
   anyone. Outside your team, a request is a 404, as an employee is.
-- **Working days skip weekly offs and the holidays at the employee's location.** Maternity counts
+- **Working days skip the person's weekly offs and the holidays at their location.** The weekly offs
+  are their roster's where one covers the date (Slice 3), the company's otherwise. Maternity counts
   calendar days, because the Act's 26 weeks are calendar weeks. A span cannot cross New Year.
 - **Posting accruals is idempotent and catches up.** "Through October" posts every missing month and
   nothing twice, so the worker can run it on a schedule later without new code.
@@ -292,6 +294,42 @@ See [OPEN.md](docs/decisions/OPEN.md) §"Raised by Slice 2":
 
 Also: one approval level, not LVE-03's two (D-20); default entitlements awaiting the SME (D-21); no
 optional holidays (D-22); a holiday added after a request does not re-price it (D-23).
+
+## Slice 3 — Attendance — in progress
+
+Built so far: shifts, rosters, and punching in and out from the browser (ATT-02, ATT-04, TR-10;
+[ADR-009](docs/decisions/ADR-009-shifts-rosters-punches.md)). Web: **Attendance** (punch card and your last
+seven days), **Shifts**, and an attendance card on each employee's profile with their roster.
+
+**A shift is two numbers,** start and end in minutes past IST midnight. One that ends at or before it starts runs
+overnight, and there is no separate night flag to disagree with the times. Each company has one default shift for
+anyone without a roster; signup seeds General, 09:30–18:30.
+
+**A roster is a timeline of changes:** from this date, this shift and these weekly offs, until the next entry.
+No end dates, so entries cannot overlap. Each entry carries its own weekly offs, and **leave counts them too**: a
+person rostered Tuesday off takes no leave on a Tuesday and is not absent on one. Changing a roster is the new
+`attendance.manage` permission, granted by migration to every role that already manages leave policy, and never
+for yourself.
+
+Four rules for punches:
+
+- **The time is the server's.** The browser sends only IN or OUT; a body with a time in it is refused, not
+  ignored.
+- **A punch is evidence.** `punch_event` is append-only like the leave ledger: no grant to change it, and a
+  trigger. A wrong punch will be put right by a regularization request beside it, not by editing it.
+- **Two clicks make one punch.** The direction must follow the last punch of the day, checked under a lock on the
+  employee row. The test sends three at once and fails with the lock removed.
+- **A punch belongs to the nearer shift.** The split is the midpoint of the gap between yesterday's shift ending
+  and today's starting. A night shift's 06:10 punch-out is filed under the day it began (D-17), and a day worker's
+  00:40 punch-out under the evening it ended. The date is worked out when punches are read, never stored, so
+  correcting a roster moves the punch.
+
+### Still to come in Slice 3
+
+Day derivation (present / absent / late / half, TR-11), missed-punch requests (ATT-05), the daily dashboard
+(ATT-08), and the month lock payroll will read (ATT-09). Open questions are in [OPEN.md](docs/decisions/OPEN.md)
+§"Raised by Slice 3": alternate-Saturday offs (D-27), managers rostering their teams (D-28), and whether the
+midpoint rule is enough (D-29). The geo-fenced selfie punch waits on hosting, storage and the mobile app.
 
 ## Why the foundation matters more than it looks
 

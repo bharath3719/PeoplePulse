@@ -285,6 +285,42 @@ today); and the worker posting accruals on a schedule (the endpoint is idempoten
 
 ---
 
+## 🟠 Raised by Slice 3 — Attendance (22-Nov-2026)
+
+Shifts, rosters and web punch are built ([ADR-009](ADR-009-shifts-rosters-punches.md)). These came up building them.
+
+### D-27 — Alternate-Saturday weekly offs
+
+Weekly offs are a list of weekdays, on the company and on each roster entry. "Second and fourth Saturday off",
+which is common in Indian offices, can't be written that way. Options: a rule per weekday with the weeks of the
+month it applies to (e.g. Saturday in weeks 2 and 4), stored on both the company setting and roster entries and
+read by leave's day count and attendance alike; or rostering those Saturdays one entry at a time, which works
+today and is tedious. Not decided. Whichever is chosen has to be read in exactly one place (core
+`weeklyOffDaysOn`), as now.
+
+### D-28 — May managers roster their own teams?
+
+Built: rosters are changed with `attendance.manage`, which only HR holds, for anyone whose attendance they can see,
+and never their own. In shift-based SMBs (factories, warehouses, retail), the supervisor often draws up the weekly
+rotation. Letting `attendance.view.team` + a narrower permission roster direct reports would fit the scope model
+leave already uses. Do pilots want that?
+
+### D-29 — Is the midpoint rule enough, or do companies need a window?
+
+A punch belongs to the nearer of yesterday's and today's shifts, split at the midpoint of the gap between them
+(ADR-009 Decision 3). It needs no configuration and handles night shifts and changes of shift. What it can't
+know is intent: a night-shift worker punching in at 13:30 is filed under last night's shift. Commercial systems
+often offer a per-shift window instead ("punches from 2 hours before start belong to this shift"). Revisit if
+pilots punch at odd hours often enough to matter.
+
+**Also not in this part of Slice 3, and not decisions so much as work:** day derivation into `attendance_day`
+(TR-11: present / absent / half / late from punches, roster, approved leave and holidays); regularization
+requests (ATT-05); the daily dashboard (ATT-08); the month lock that payroll reads (ATT-09, TR-12); late/early
+rules and penalties (ATT-06); overtime (ATT-07); WFH / on-duty (ATT-10); the geo-fenced selfie punch (ATT-01,
+waiting on D-6, D-7 and D-13); biometric devices (ATT-03, Phase 2); and the worker running derivation nightly.
+
+---
+
 ## ✅ Resolved
 
 | # | Decision | Outcome | Where |
@@ -309,3 +345,4 @@ today); and the worker posting accruals on a schedule (the endpoint is idempoten
 | D-5 | Auth | **Build** per TR-50 — Argon2id, JWT, TOTP MFA. | [ADR-005](ADR-005-data-layer.md) |
 | — | Phase 1 order; leave model | **Leave before Attendance.** Append-only ledger in **integer hundredths of a day**; debited at approval; half days as sessions. | [ADR-007](ADR-007-leave-is-a-ledger.md) |
 | D-25 | Leave year-end | Per-type **carry → encash → lapse** limits; a re-runnable, previewable close that writes ledger entries and reports what it would not guess at. | [ADR-008](ADR-008-closing-a-leave-year.md) |
+| — | Shifts, rosters, punches | Shift = start/end minutes, overnight when end ≤ start; roster = timeline of start-dated entries that also sets leave's weekly offs; punch = append-only, server-timed, filed under the nearer shift. | [ADR-009](ADR-009-shifts-rosters-punches.md) |
