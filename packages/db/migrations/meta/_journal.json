@@ -57,6 +57,13 @@
       "when": 1794247027915,
       "tag": "0007_chilly_impossible_man",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1795333814715,
+      "tag": "0008_reflective_wolf_cub",
+      "breakpoints": true
     }
   ]
 }

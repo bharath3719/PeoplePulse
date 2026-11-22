@@ -3,5 +3,6 @@ export * from './identity';
 export * from './org';
 export * from './employee';
 export * from './leave';
+export * from './attendance';
 export * from './audit';
 export * from './rate-limit';

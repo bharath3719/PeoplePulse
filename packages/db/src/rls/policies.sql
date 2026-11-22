@@ -75,6 +75,9 @@ DECLARE
     'holiday',
     'leave_request',
     'leave_txn',
+    'shift',
+    'roster_assignment',
+    'punch_event',
     'audit_log'
   ];
 BEGIN
@@ -218,3 +221,32 @@ DROP TRIGGER IF EXISTS leave_txn_no_mutation ON leave_txn;
 CREATE TRIGGER leave_txn_no_mutation
   BEFORE UPDATE OR DELETE ON leave_txn
   FOR EACH ROW EXECUTE FUNCTION leave_txn_is_append_only();
+
+-- ---------------------------------------------------------------------------
+-- Punches are append-only too (TR-10)
+-- ---------------------------------------------------------------------------
+--
+-- A punch is evidence of when someone was at work, and the muster roll it feeds
+-- (Form 25, RPT-01) is a statutory register. A punch that can be edited proves
+-- nothing. A missed or mistaken one is put right by a regularization request
+-- (ATT-05) recorded beside it; the punch itself stays as it was.
+--
+-- Erasure follows leave_txn exactly: purge mode for account closure, and the
+-- one never-paid employee a hard delete names in `app.erasing_employee` (D-19),
+-- whose punches go by the foreign key's cascade.
+
+CREATE OR REPLACE FUNCTION punch_event_is_append_only() RETURNS trigger AS $$
+BEGIN
+  IF TG_OP = 'DELETE' AND (
+    is_purge_mode()
+    OR OLD.employee_id::text = current_setting('app.erasing_employee', true)
+  ) THEN
+    RETURN OLD;
+  END IF;
+  RAISE EXCEPTION 'punch_event is append-only (TR-10): correct attendance with a regularization, not a %', TG_OP;
+END $$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS punch_event_no_mutation ON punch_event;
+CREATE TRIGGER punch_event_no_mutation
+  BEFORE UPDATE OR DELETE ON punch_event
+  FOR EACH ROW EXECUTE FUNCTION punch_event_is_append_only();

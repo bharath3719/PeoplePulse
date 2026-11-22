@@ -33,6 +33,7 @@ export const TENANT_OWNED_TABLES = [
   'location', 'department', 'designation', 'grade',
   'employee', 'employee_event',
   'leave_type', 'holiday', 'leave_request', 'leave_txn',
+  'shift', 'roster_assignment', 'punch_event',
   'audit_log',
 ] as const;
 

@@ -72,3 +72,4 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA public
 REVOKE UPDATE, DELETE ON audit_log FROM peoplepulse_app;
 REVOKE UPDATE, DELETE ON employee_event FROM peoplepulse_app;
 REVOKE UPDATE, DELETE ON leave_txn FROM peoplepulse_app;
+REVOKE UPDATE, DELETE ON punch_event FROM peoplepulse_app;

@@ -6,7 +6,7 @@ import { runMigrations } from '../migrate';
 import { withTenant, withPurgeMode, type Database } from '../client';
 import { assertRlsEnforced } from './assert-enforced';
 import * as schema from '../schema/index';
-import { tenant, employee, location, leaveType, leaveTxn } from '../schema/index';
+import { tenant, employee, location, leaveType, leaveTxn, punchEvent } from '../schema/index';
 
 /**
  * ============================================================================
@@ -373,6 +373,31 @@ describeIfDb('append-only guarantees (NFR-08, CHR-07)', () => {
     await expect(
       withTenant(ownerDb, acme, (tx) =>
         tx.execute(sql`update leave_txn set days_hundredths = 3000 where tenant_id = ${acme}`)),
+    ).rejects.toThrow(/append-only/);
+  });
+
+  it('refuses to rewrite a punch — attendance evidence, and a statutory register (TR-10)', async () => {
+    const [priya] = await withTenant(db, acme, (tx) =>
+      tx.select().from(employee).where(eq(employee.empCode, 'ACME-001')));
+
+    await withTenant(db, acme, (tx) => tx.insert(punchEvent).values({
+      tenantId: acme, employeeId: priya!.id, punchedAt: new Date('2026-07-13T04:05:00Z'), direction: 'IN', source: 'WEB',
+    }));
+
+    // Moving a 09:35 arrival to 09:25 turns a late mark into an on-time one,
+    // with nothing left to show it happened.
+    await expect(
+      withTenant(db, acme, (tx) =>
+        tx.execute(sql`update punch_event set punched_at = punched_at - interval '10 minutes' where tenant_id = ${acme}`)),
+    ).rejects.toThrow(REFUSED);
+    await expect(
+      withTenant(db, acme, (tx) => tx.execute(sql`delete from punch_event where tenant_id = ${acme}`)),
+    ).rejects.toThrow(REFUSED);
+
+    // The owner holds the grants, so this reaches the trigger — the second lock.
+    await expect(
+      withTenant(ownerDb, acme, (tx) =>
+        tx.execute(sql`update punch_event set punched_at = punched_at - interval '10 minutes' where tenant_id = ${acme}`)),
     ).rejects.toThrow(/append-only/);
   });
 
