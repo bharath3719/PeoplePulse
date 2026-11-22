@@ -2,6 +2,7 @@ import {
   addDays, leaveYearOf, weekdayOf, istDate, type IstDate, type LeaveYear,
 } from '../date/india';
 import { HALF_DAY, dayHundredths, type DayHundredths } from './units';
+import { rosterOn, type RosterEntry } from '../attendance/roster';
 
 /**
  * What a leave request covers, in half-day SESSIONS.
@@ -44,8 +45,15 @@ export type DayCountBasis = (typeof DAY_COUNT_BASES)[number];
 
 /** Which days an employee was not due at work anyway. */
 export interface WorkingCalendar {
-  /** 0 = Sunday .. 6 = Saturday. The company's weekly offs until rosters (ATT-04) replace them. */
+  /** 0 = Sunday .. 6 = Saturday. The company's weekly offs: for dates no roster entry covers. */
   readonly weeklyOffDays: readonly number[];
+  /**
+   * The employee's roster (ATT-04), if they have one. On a date it covers, its
+   * entry's weekly offs replace the company's — someone rostered Tuesday off
+   * takes no leave on a Tuesday, whatever the office does. Attendance reads the
+   * same entries, so the two never disagree about which days are off.
+   */
+  readonly roster?: readonly RosterEntry[];
   /** Holidays at the employee's location, plus company-wide ones. */
   readonly holidays: ReadonlySet<string>;
 }
@@ -111,7 +119,12 @@ export function countLeaveDays(
 }
 
 export function isDayOff(date: IstDate, calendar: WorkingCalendar): boolean {
-  return calendar.weeklyOffDays.includes(weekdayOf(date)) || calendar.holidays.has(date);
+  return weeklyOffDaysOn(date, calendar).includes(weekdayOf(date)) || calendar.holidays.has(date);
+}
+
+/** The weekly offs in force on a date: the roster entry's, or the company's before (or without) one. */
+export function weeklyOffDaysOn(date: IstDate, calendar: Pick<WorkingCalendar, 'weeklyOffDays' | 'roster'>): readonly number[] {
+  return rosterOn(calendar.roster ?? [], date)?.weeklyOffDays ?? calendar.weeklyOffDays;
 }
 
 /**

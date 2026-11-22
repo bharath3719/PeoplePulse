@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   istDate, toIstDate, financialYearOf, financialYearStart, financialYearEnd,
   leaveYearOf, esiContributionPeriodOf, esiContributionPeriodStart,
-  payrollMonth, daysInMonth, attendanceDayOf, addDays, daysBetweenInclusive,
+  payrollMonth, daysInMonth, addDays, daysBetweenInclusive,
   DateError,
 } from './india';
 
@@ -76,38 +76,6 @@ describe('payroll months', () => {
   it('rejects a malformed month', () => {
     expect(() => payrollMonth('2026-13')).toThrow(DateError);
     expect(() => payrollMonth('2026-7')).toThrow(DateError);
-  });
-});
-
-describe('night-shift attendance day (D-17) — one shift, one day', () => {
-  const nightShift = { isNight: true, cutoverHour: 12 };
-  const dayShift = { isNight: false, cutoverHour: 0 };
-
-  it('files a day-shift punch under the day it happened', () => {
-    // 09:30 IST on the 13th = 04:00 UTC.
-    expect(attendanceDayOf(new Date('2026-07-13T04:00:00Z'), dayShift)).toBe('2026-07-13');
-  });
-
-  it('files BOTH ends of a night shift under the day the shift STARTED', () => {
-    // Punch IN  22:00 IST on the 13th  (= 16:30 UTC on the 13th)
-    const punchIn = new Date('2026-07-13T16:30:00Z');
-    // Punch OUT 06:00 IST on the 14th  (= 00:30 UTC on the 14th)
-    const punchOut = new Date('2026-07-14T00:30:00Z');
-
-    // Naively, these fall on different IST dates:
-    expect(toIstDate(punchIn)).toBe('2026-07-13');
-    expect(toIstDate(punchOut)).toBe('2026-07-14');
-
-    // But for a night shift they are ONE attendance day — the 13th.
-    // Without this, both days flag a missing punch and LOP is wrong twice.
-    expect(attendanceDayOf(punchIn, nightShift)).toBe('2026-07-13');
-    expect(attendanceDayOf(punchOut, nightShift)).toBe('2026-07-13');
-  });
-
-  it('files a night-shift punch after the cutover under the new day', () => {
-    // 14:00 IST — past noon, so this is the START of tonight's shift, not the
-    // tail of last night's.
-    expect(attendanceDayOf(new Date('2026-07-14T08:30:00Z'), nightShift)).toBe('2026-07-14');
   });
 });
 

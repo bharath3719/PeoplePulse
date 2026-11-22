@@ -29,6 +29,10 @@
       "types": "./dist/leave/index.d.ts",
       "default": "./dist/leave/index.js"
     },
+    "./attendance": {
+      "types": "./dist/attendance/index.d.ts",
+      "default": "./dist/attendance/index.js"
+    },
     "./validation": {
       "types": "./dist/validation/index.d.ts",
       "default": "./dist/validation/index.js"

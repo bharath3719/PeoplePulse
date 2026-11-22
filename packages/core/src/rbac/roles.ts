@@ -51,6 +51,7 @@ const HR_ADMIN_PERMISSIONS: readonly Permission[] = [
   'org.manage',
   'attendance.view.all',
   'attendance.lock',
+  'attendance.manage',
   'leave.view.all',
   'leave.manage',
   'user.invite',

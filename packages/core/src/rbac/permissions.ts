@@ -41,6 +41,7 @@ export const PERMISSIONS = {
   'attendance.approve':       'Approve regularization requests',
   'attendance.lock':          'Lock a month — feeds payroll, IRREVERSIBLE without unlock',
   'attendance.unlock':        'Unlock a locked month — voids draft payroll runs',
+  'attendance.manage':        'Configure shifts and assign rosters',
 
   // --- Leave ---
   'leave.apply':              'Apply for leave',

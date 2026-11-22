@@ -156,13 +156,20 @@ export const createHolidaySchema = z.object({
 export type CreateHolidayInput = z.infer<typeof createHolidaySchema>;
 
 /**
- * The company's weekly offs, 0 = Sunday .. 6 = Saturday. At least one working
- * day, or every leave request counts as nothing. Rosters (ATT-04) will set this
- * per employee; until then it is one setting for the company.
+ * Weekly offs, 0 = Sunday .. 6 = Saturday. At least one working day, or every
+ * leave request counts as nothing and nobody is ever absent. The company's
+ * setting and each roster entry (validation/attendance.ts) are both this.
+ */
+export const weeklyOffDaysSchema = z.array(z.number().int().min(0).max(6))
+  .transform((list) => [...new Set(list)].sort((a, b) => a - b))
+  .refine((list) => list.length <= 6, 'Leave at least one working day');
+
+/**
+ * The company's weekly offs: for everyone without a roster entry (ATT-04) on
+ * the date in question.
  */
 export const leaveSettingsSchema = z.object({
-  weeklyOffDays: z.array(z.number().int().min(0).max(6)).max(6, 'Leave at least one working day')
-    .transform((list) => [...new Set(list)].sort((a, b) => a - b)),
+  weeklyOffDays: weeklyOffDaysSchema,
 }).strict();
 export type LeaveSettingsInput = z.infer<typeof leaveSettingsSchema>;
 

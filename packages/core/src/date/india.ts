@@ -152,39 +152,12 @@ export function lastDayOfMonth(month: PayrollMonth): IstDate {
 }
 
 // ---------------------------------------------------------------------------
-// Attendance day resolution — the night-shift rule
+// Attendance day resolution
 // ---------------------------------------------------------------------------
-
-/**
- * Which attendance day does a punch belong to?
- *
- * For a DAY shift, the answer is boring: the IST date it happened on.
- *
- * For a NIGHT shift it is not. An employee on 22:00-06:00 punches IN at 22:00
- * on the 13th and OUT at 06:00 on the 14th. If each punch were filed under the
- * day it occurred, BOTH days would show a missing punch, both would be flagged,
- * and LOP would be wrong twice instead of right once.
- *
- * The rule (OPEN.md D-17): a night shift's attendance day is the day the SHIFT
- * STARTED. A punch that lands before the shift's cutover hour is attributed
- * back to the previous day.
- *
- * `cutoverHour` is the IST hour before which a punch still belongs to
- * yesterday's night shift. For a 22:00-06:00 shift, something around 12 (noon)
- * is sane: anything before noon is the tail of last night's shift.
- */
-export function attendanceDayOf(
-  instant: Date,
-  shift: { isNight: boolean; cutoverHour: number },
-): IstDate {
-  const date = toIstDate(instant);
-  if (!shift.isNight) return date;
-
-  const hour = Math.floor(istMinutesOfDay(instant) / 60);
-  if (hour >= shift.cutoverHour) return date;
-
-  return addDays(date, -1);
-}
+//
+// Which day a punch belongs to — the night-shift rule, D-17 — depends on the
+// shifts either side of it, so it lives with them: attendanceDateOf in
+// attendance/shift.ts. There is one implementation, and it is that one.
 
 export function addDays(date: IstDate, days: number): IstDate {
   const d = new Date(`${date}T00:00:00Z`);
