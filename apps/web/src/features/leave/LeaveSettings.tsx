@@ -50,8 +50,8 @@ function WeeklyOffs() {
       <CardHeader>
         <CardTitle className="text-base">Weekly offs</CardTitle>
         <CardDescription>
-          The days working-day leave skips, for the whole company until shift rosters arrive. Changing
-          them does not re-count leave already requested.
+          The company&apos;s weekly offs, for anyone without a roster. A roster on someone&apos;s profile sets
+          their own, and leave skips those instead. Changing either does not re-count leave already requested.
         </CardDescription>
       </CardHeader>
       <CardContent>

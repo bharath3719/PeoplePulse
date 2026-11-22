@@ -1,5 +1,5 @@
 import { Link, NavLink, Navigate, Route, Routes, useLocation } from 'react-router-dom';
-import { Building2, CalendarCheck, CalendarDays, LogOut, ShieldCheck, Upload, UserCog, Users } from 'lucide-react';
+import { Building2, CalendarCheck, CalendarDays, Clock, LogOut, ShieldCheck, Upload, UserCog, Users } from 'lucide-react';
 import { tokenStore } from '@/lib/api';
 import { cn } from '@/lib/utils';
 import { useSession } from '@/features/auth/api/auth';
@@ -19,6 +19,8 @@ import { UserAccess } from '@/features/users/UserAccess';
 import { MyLeave } from '@/features/leave/MyLeave';
 import { LeaveApprovals } from '@/features/leave/LeaveApprovals';
 import { LeaveSettings } from '@/features/leave/LeaveSettings';
+import { MyAttendance } from '@/features/attendance/MyAttendance';
+import { ShiftSettings } from '@/features/attendance/ShiftSettings';
 
 /**
  * The app shell and the routing table.
@@ -78,6 +80,8 @@ function Gate() {
           <Route path="/leave" element={<MyLeave />} />
           <Route path="/leave/approvals" element={<LeaveApprovals />} />
           <Route path="/leave/settings" element={<LeaveSettings />} />
+          <Route path="/attendance" element={<MyAttendance />} />
+          <Route path="/attendance/shifts" element={<ShiftSettings />} />
           <Route path="/security" element={<Security />} />
 
           {/* Already signed in — the login form has nothing to offer. */}
@@ -119,6 +123,9 @@ function Shell({ children }: { children: React.ReactNode }) {
           <nav className="flex items-center gap-1">
             <Can I="employee.view">
               <NavItem to="/employees" icon={Users}>People</NavItem>
+            </Can>
+            <Can I="attendance.punch">
+              <NavItem to="/attendance" icon={Clock}>Attendance</NavItem>
             </Can>
             <Can I="leave.apply">
               <NavItem to="/leave" icon={CalendarDays} end>Leave</NavItem>
