@@ -75,7 +75,11 @@ function PunchPanel() {
 function BalancePanel({ employeeId }: { employeeId: string }) {
   const year = thisLeaveYear();
   const balances = useLeaveBalances(employeeId, year);
-  const shown = (balances.data ?? []).filter((b) => b.availableDays !== null).slice(0, 4);
+  // A type with nothing credited, taken or asked for (maternity, until HR grants
+  // it) is not a balance anyone needs to see on their front page.
+  const shown = (balances.data ?? [])
+    .filter((b) => b.availableDays !== null && (b.availableDays !== 0 || b.takenDays !== 0 || b.pendingDays !== 0))
+    .slice(0, 4);
 
   return (
     <div className="flex flex-col justify-between gap-3">

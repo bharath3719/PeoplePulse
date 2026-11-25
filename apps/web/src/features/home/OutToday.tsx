@@ -3,7 +3,6 @@ import { Avatar } from '@/components/ui/avatar';
 import { EmptyState } from '@/components/ui/empty-state';
 import { useLeaveRequests } from '@/features/leave/api/leave';
 import { formatDate, thisLeaveYear, today } from '@/features/leave/format';
-import { shiftDate } from './dates';
 import { RowsSkeleton, Widget } from './Widget';
 
 /**
@@ -37,7 +36,8 @@ export function OutToday() {
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-sm font-medium">{r.employee.name}</p>
                   <p className="truncate text-xs text-muted-foreground">
-                    {r.leaveType.name} · {half ?? (r.endDate === t ? 'back tomorrow' : `back ${formatDate(shiftDate(r.endDate, 1))}`)}
+                    {/* "Until", never "back on": the day after may be their weekly off, which this list does not know. */}
+                    {r.leaveType.name} · {half ?? (r.endDate === t ? 'today only' : `until ${formatDate(r.endDate)}`)}
                   </p>
                 </div>
               </li>

@@ -100,7 +100,8 @@ export function SetupChecklist() {
       </div>
       <ul className="grid divide-y sm:grid-cols-2 sm:divide-y-0 lg:grid-cols-3">
         {steps.map((s) => (
-          <li key={s.key}>
+          // On a phone, only what is left: the done steps cost a screenful.
+          <li key={s.key} className={cn(s.done && 'hidden sm:block')}>
             <Link
               to={s.to}
               className={cn('group flex h-full items-start gap-3 px-5 py-4 transition-colors hover:bg-accent/60', s.done && 'opacity-60')}

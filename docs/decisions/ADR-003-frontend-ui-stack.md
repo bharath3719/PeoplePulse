@@ -56,6 +56,20 @@ Two secondary factors: shadcn/ui components are **copied into the repo, so we ow
 - shadcn components are **vendored, not versioned** — upstream fixes do not arrive automatically. We must record which components were pulled and when.
 - Payroll and register grids are large; **virtualisation is required, not optional**, to meet the p95 < 2s page-load target (NFR-02).
 
+## Vendored components
+
+As the consequences above require: what was pulled, and when. All are shadcn/ui's, adapted to our tokens.
+
+| Date | Components | On |
+|---|---|---|
+| 13-Jul-2026 | Button, Card, Input, Field (ours), native Select (deliberately not Radix's) | — |
+| 25-Nov-2026 | Dialog + Sheet, DropdownMenu, Tabs, Tooltip, Command, Toaster | `@radix-ui/react-*`, `cmdk`, `sonner` |
+| 25-Nov-2026 | Avatar, Badge, Skeleton, PageHeader, EmptyState (ours) | — |
+
+The 25-Nov set came with the app shell (sidebar, Ctrl K command menu, Home). Inter is self-hosted
+from `@fontsource-variable/inter` rather than fetched from Google, so no third party sees who opens
+the app.
+
 ## Still open
 
 Mobile UI kit for `apps/mobile` (React Native Paper / Tamagui / NativeWind). Not needed until the ESS app in Phase 1.5. Tracked in [OPEN.md](OPEN.md).

@@ -5,6 +5,7 @@ import {
   type ColumnDef, type SortingState,
 } from '@tanstack/react-table';
 import { Search, Plus, Upload } from 'lucide-react';
+import { Avatar } from '@/components/ui/avatar';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { PfStatusBadge, EsiStatusBadge } from '@/components/ui/pf-status-badge';
@@ -46,13 +47,16 @@ export function EmployeeList() {
         header: 'Name',
         accessorFn: (e) => `${e.firstName} ${e.lastName ?? ''}`.trim(),
         cell: ({ row }) => (
-          <div>
-            <div className="font-medium">
-              {row.original.firstName} {row.original.lastName}
+          <div className="flex items-center gap-3">
+            <Avatar name={`${row.original.firstName} ${row.original.lastName ?? ''}`} />
+            <div className="min-w-0">
+              <div className="truncate font-medium">
+                {row.original.firstName} {row.original.lastName}
+              </div>
+              {row.original.workEmail && (
+                <div className="truncate text-xs text-muted-foreground">{row.original.workEmail}</div>
+              )}
             </div>
-            {row.original.workEmail && (
-              <div className="text-xs text-muted-foreground">{row.original.workEmail}</div>
-            )}
           </div>
         ),
       },
