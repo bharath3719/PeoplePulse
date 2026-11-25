@@ -61,7 +61,14 @@ npm test                      # 350 tests, incl. 16 tenant-isolation + 29 leave 
 
 npm run dev:api               # :3000/api/v1
 npm run dev:web               # :5173, proxies /api to the API
+npm run db:seed               # with the API running: a 60-person demo company, its leave and ~3 months of punches
 ```
+
+**`db:seed` makes a company that looks like a customer's** — Tungabhadra Organics, invented down to
+the last person, on `.example` addresses that cannot receive mail. Everything the API will do goes
+through it (signup, org, employees, rosters, holidays, accruals), so PF status and the ledger come
+from the real code; past punches and leave for people without logins, which the API rightly refuses,
+are written as the owner following the same rules. It prints the admin's sign-in at the end.
 
 **Invitation emails go to the API's log in development.** Set `SMTP_URL` (see `.env.example`) to
 send them for real; without it, each one — link included — is printed by `MailService`, so you can

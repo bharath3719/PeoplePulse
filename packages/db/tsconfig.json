@@ -12,7 +12,7 @@
     "declarationMap": false
   },
   "include": ["src/**/*"],
-  // env.ts and migrate.ts are dev-time entry points. Excluding them keeps
+  // env.ts, migrate.ts and seed-demo.ts are dev-time entry points. Excluding them keeps
   // `dotenv` (a devDependency) out of the shipped dist/ runtime path.
-  "exclude": ["src/**/*.test.ts", "src/migrate.ts", "src/env.ts"]
+  "exclude": ["src/**/*.test.ts", "src/migrate.ts", "src/env.ts", "src/seed-demo.ts"]
 }
