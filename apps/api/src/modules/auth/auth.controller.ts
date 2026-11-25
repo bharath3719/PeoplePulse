@@ -153,6 +153,7 @@ export class AuthController {
       userId: actor.userId,
       tenantId: actor.tenantId,
       employeeId: actor.employeeId,
+      ...(await this.auth.identity(actor)),
       mfaVerified: actor.mfaVerified,
       ...(await this.auth.mfaStatus(actor)),
       permissions: [...actor.permissions],

@@ -10,7 +10,7 @@ import * as argon2 from 'argon2';
 import { authenticator } from 'otplib';
 import * as QRCode from 'qrcode';
 import {
-  user, userTenant, userRole, role, rolePermission, tenant,
+  user, userTenant, userRole, role, rolePermission, tenant, employee,
   withoutTenantIsolation, withTenant, type Database, type TenantDatabase, type User, type NewUser,
 } from '@peoplepulse/db';
 import {
@@ -212,6 +212,28 @@ export class AuthService {
         tenants: memberships.map(toOption),
       };
     });
+  }
+
+  /**
+   * For /auth/me: who is signed in, to greet them and label their menu. The
+   * email is the login's, which is global. The name is the linked employee's
+   * in THIS company, read under its tenant context, so it is null for a login
+   * with no employee record here (the CA firm's accountant, most admins).
+   */
+  async identity(actor: Actor): Promise<{ email: string; name: string | null }> {
+    const [login] = await withoutTenantIsolation(this.db, 'identity: the login is global, not per company', (db) =>
+      db.select({ email: user.email }).from(user).where(eq(user.id, actor.userId)));
+
+    let name: string | null = null;
+    const employeeId = actor.employeeId;
+    if (employeeId) {
+      const [person] = await withTenant(this.db, actor.tenantId, (tx) =>
+        tx.select({ firstName: employee.firstName, lastName: employee.lastName }).from(employee)
+          .where(and(eq(employee.id, employeeId), isNull(employee.deletedAt))));
+      if (person) name = [person.firstName, person.lastName].filter(Boolean).join(' ');
+    }
+
+    return { email: login?.email ?? '', name };
   }
 
   /** For /auth/me: so the web app knows, on any page load, whether to ask for a code. */

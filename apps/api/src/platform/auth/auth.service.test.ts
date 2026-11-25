@@ -10,7 +10,7 @@ import { and, eq, inArray, sql } from 'drizzle-orm';
 import { authenticator } from 'otplib';
 import {
   getDb, closeDb, withTenant, withPurgeMode, assertRlsEnforced,
-  tenant, user, userTenant, role, rolePermission, userRole, auditLog, type Database,
+  tenant, user, userTenant, role, rolePermission, userRole, auditLog, employee, type Database,
 } from '@peoplepulse/db';
 import type { Actor } from '@peoplepulse/core';
 import { AuditService } from '../audit/audit.service';
@@ -154,6 +154,26 @@ describeIfDb('the company switcher', () => {
   it('refuses a company the user never belonged to', async () => {
     await expect(service.switchTenant(accountant, initech)).rejects.toThrow(ForbiddenException);
     await expect(service.switchTenant(accountant, randomUUID())).rejects.toThrow(ForbiddenException);
+  });
+});
+
+/** Who /auth/me says is signed in: the shell greets them by it. */
+describeIfDb('identity', () => {
+  const asActor = (tenantId: string, employeeId: string | null): Actor =>
+    ({ userId: accountant, tenantId, employeeId, permissions: new Set(), mfaVerified: false });
+
+  it('names nobody for a login with no employee record in the company', async () => {
+    expect(await service.identity(asActor(acme, null))).toEqual({ email: accountantEmail, name: null });
+  });
+
+  it('names the linked employee, read in the company they belong to', async () => {
+    const [person] = await withTenant(db, zenith, (tx) => tx.insert(employee)
+      .values({ tenantId: zenith, empCode: 'ZX-001', firstName: 'Meera', lastName: 'Iyer', joinDate: '2026-01-05' })
+      .returning({ id: employee.id }));
+
+    expect(await service.identity(asActor(zenith, person!.id))).toEqual({ email: accountantEmail, name: 'Meera Iyer' });
+    // The same id asked for under another company finds no one: RLS, not a filter.
+    expect(await service.identity(asActor(acme, person!.id))).toEqual({ email: accountantEmail, name: null });
   });
 });
 
