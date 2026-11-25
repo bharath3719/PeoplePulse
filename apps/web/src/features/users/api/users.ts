@@ -39,10 +39,11 @@ export interface PendingInvitation {
   employee: EmployeeRef | null;
 }
 
-export function useAccess() {
+export function useAccess(enabled = true) {
   return useQuery({
     queryKey: ['users'],
     queryFn: () => api.get<{ members: Member[]; invitations: PendingInvitation[] }>('/users'),
+    enabled,
   });
 }
 

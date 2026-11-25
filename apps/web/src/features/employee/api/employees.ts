@@ -42,12 +42,14 @@ export interface Employee {
   pfJoiningWageRupees?: number | null;
 }
 
-export function useEmployees(search?: string) {
+/** `enabled: false` for someone without `employee.view`, whom the API would refuse. */
+export function useEmployees(search?: string, enabled = true) {
   return useQuery({
     queryKey: ['employees', search ?? ''],
     queryFn: () =>
       api.get<{ data: Employee[] }>(`/employees${search ? `?search=${encodeURIComponent(search)}` : ''}`),
     select: (r) => r.data,
+    enabled,
   });
 }
 

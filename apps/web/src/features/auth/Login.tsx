@@ -3,8 +3,8 @@ import { tokenStore } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Field } from '@/components/ui/field';
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { useLogin, useSignup } from './api/auth';
+import { AuthLayout } from './AuthLayout';
 import { MfaCodeForm } from './Mfa';
 
 // Home, not People: the app decides which page that is from what they can do.
@@ -29,13 +29,7 @@ export function Login() {
    */
   if (step === 'code') {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-muted/30 p-4">
-        <Card className="w-full max-w-md">
-          <CardHeader>
-            <CardTitle>Enter your code</CardTitle>
-            <CardDescription>From the authenticator app on your phone.</CardDescription>
-          </CardHeader>
-          <CardContent>
+      <AuthLayout title="Enter your code" description="From the authenticator app on your phone.">
             <MfaCodeForm onDone={done} onRecovered={recovered} />
             <button
               type="button"
@@ -48,9 +42,7 @@ export function Login() {
             >
               Sign in as someone else
             </button>
-          </CardContent>
-        </Card>
-      </div>
+      </AuthLayout>
     );
   }
 
@@ -74,18 +66,12 @@ export function Login() {
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-muted/30 p-4">
-      <Card className="w-full max-w-md">
-        <CardHeader>
-          <CardTitle>{mode === 'login' ? 'Sign in to PeoplePulse' : 'Set up your company'}</CardTitle>
-          <CardDescription>
-            {mode === 'login'
-              ? 'HR, payroll, attendance and leave — in one place.'
-              : 'Takes about a minute. You can invite your team afterwards.'}
-          </CardDescription>
-        </CardHeader>
-
-        <CardContent>
+    <AuthLayout
+      title={mode === 'login' ? 'Welcome back' : 'Set up your company'}
+      description={mode === 'login'
+        ? 'Sign in to your PeoplePulse account.'
+        : 'Takes about a minute. You can invite your team afterwards.'}
+    >
           <form onSubmit={submit} className="space-y-4">
             {mode === 'signup' && (
               <>
@@ -116,7 +102,7 @@ export function Login() {
               </p>
             )}
 
-            <Button type="submit" className="w-full" disabled={pending}>
+            <Button type="submit" size="lg" className="w-full" disabled={pending}>
               {pending ? 'Just a moment…' : mode === 'login' ? 'Sign in' : 'Create company'}
             </Button>
           </form>
@@ -124,14 +110,12 @@ export function Login() {
           <button
             type="button"
             onClick={() => setMode(mode === 'login' ? 'signup' : 'login')}
-            className="mt-4 w-full text-center text-sm text-muted-foreground hover:text-foreground"
+            className="mt-6 w-full text-center text-sm text-muted-foreground hover:text-foreground"
           >
             {mode === 'login'
               ? "Don't have an account? Set up your company"
               : 'Already have an account? Sign in'}
           </button>
-        </CardContent>
-      </Card>
-    </div>
+    </AuthLayout>
   );
 }

@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { CalendarCheck, CalendarPlus, Settings2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
@@ -20,7 +20,9 @@ export function MyLeave() {
   const { session } = usePermissions();
   const navigate = useNavigate();
   const year = thisLeaveYear();
-  const [applying, setApplying] = useState(false);
+  // "?apply=1" opens the form straight away — from Home, or the command menu.
+  const [searchParams] = useSearchParams();
+  const [applying, setApplying] = useState(() => searchParams.get('apply') === '1');
   const employeeId = session?.employeeId ?? null;
 
   return (

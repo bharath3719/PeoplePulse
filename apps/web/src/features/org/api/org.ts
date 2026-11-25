@@ -11,8 +11,8 @@ export interface Org {
   grades: OrgUnit[];
 }
 
-export function useOrg() {
-  return useQuery({ queryKey: ['org'], queryFn: () => api.get<Org>('/org') });
+export function useOrg(enabled = true) {
+  return useQuery({ queryKey: ['org'], queryFn: () => api.get<Org>('/org'), enabled });
 }
 
 function useCreateOrgUnit<T>(path: string) {

@@ -50,6 +50,15 @@ function useMfaTokenSwap<TInput, TResult extends Tokens>(
   });
 }
 
+/**
+ * Sign out. A hard navigation, not a router push: it drops the TanStack Query
+ * cache, which still holds this company's employee data.
+ */
+export function signOut() {
+  tokenStore.clear();
+  window.location.href = '/login';
+}
+
 /** Re-read the session, for the step that deferred it. */
 export function useRefreshSession() {
   const qc = useQueryClient();

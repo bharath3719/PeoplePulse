@@ -182,7 +182,7 @@ export const useCloseYear = () =>
 
 // --- Requests --------------------------------------------------------------
 
-export function useLeaveRequests(filter: { status?: LeaveStatus; year?: number } = {}) {
+export function useLeaveRequests(filter: { status?: LeaveStatus; year?: number } = {}, enabled = true) {
   const params = new URLSearchParams();
   if (filter.status) params.set('status', filter.status);
   if (filter.year) params.set('year', String(filter.year));
@@ -190,6 +190,22 @@ export function useLeaveRequests(filter: { status?: LeaveStatus; year?: number }
   return useQuery({
     queryKey: ['leave', 'requests', filter],
     queryFn: () => api.get<LeaveRequest[]>(`/leave/requests${query ? `?${query}` : ''}`),
+    enabled,
+  });
+}
+
+/**
+ * Requests waiting on this person's decision: the Approvals badge in the sidebar
+ * and the inbox on Home. The same cache entry as the Approvals page's pending
+ * list, so deciding there clears the badge here. `canDecide` is the server's
+ * answer — your own request is pending but is not yours to decide.
+ */
+export function usePendingDecisions(enabled: boolean) {
+  return useQuery({
+    queryKey: ['leave', 'requests', { status: 'PENDING' }],
+    queryFn: () => api.get<LeaveRequest[]>('/leave/requests?status=PENDING'),
+    enabled,
+    select: (rows) => rows.filter((r) => r.canDecide),
   });
 }
 

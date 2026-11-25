@@ -1,10 +1,11 @@
-import { Link, NavLink, Navigate, Route, Routes, useLocation } from 'react-router-dom';
-import { Building2, CalendarCheck, CalendarDays, Clock, LogOut, ShieldCheck, Upload, UserCog, Users } from 'lucide-react';
+import { Link, Navigate, Route, Routes, useLocation } from 'react-router-dom';
+import { LogoMark } from '@/components/brand/logo';
+import { buttonVariants } from '@/components/ui/button';
 import { tokenStore } from '@/lib/api';
-import { cn } from '@/lib/utils';
 import { useSession } from '@/features/auth/api/auth';
-import { Can, PermissionProvider, usePermissions } from '@/features/auth/permissions';
-import { CompanySwitcher } from '@/features/auth/CompanySwitcher';
+import { PermissionProvider } from '@/features/auth/permissions';
+import { AppShell } from '@/features/shell/AppShell';
+import { Home } from '@/features/home/Home';
 import { Login } from '@/features/auth/Login';
 import { AcceptInvitation } from '@/features/auth/AcceptInvitation';
 import { Security } from '@/features/auth/Security';
@@ -67,8 +68,9 @@ function Gate() {
 
   return (
     <PermissionProvider session={session.data}>
-      <Shell>
+      <AppShell>
         <Routes>
+          <Route path="/home" element={<Home />} />
           <Route path="/employees" element={<EmployeeList />} />
           <Route path="/employees/new" element={<EmployeeNew />} />
           <Route path="/employees/:id" element={<EmployeeDetail />} />
@@ -85,149 +87,20 @@ function Gate() {
           <Route path="/security" element={<Security />} />
 
           {/* Already signed in — the login form has nothing to offer. */}
-          <Route path="/login" element={<Home />} />
-          <Route path="/" element={<Home />} />
+          <Route path="/login" element={<Navigate to="/home" replace />} />
+          <Route path="/" element={<Navigate to="/home" replace />} />
           <Route path="*" element={<NotFound />} />
         </Routes>
-      </Shell>
+      </AppShell>
     </PermissionProvider>
-  );
-}
-
-/**
- * Where "home" is. People, for whoever administers the company; their own leave
- * for an employee, whose People page lists only their reports — empty, for most,
- * which read as "No employees yet" on their first sign-in. Decided by what they
- * can do, never by what their role is called.
- */
-function Home() {
-  const { can } = usePermissions();
-  const home = !can('employee.view.all') && can('leave.apply') ? '/leave' : '/employees';
-  return <Navigate to={home} replace />;
-}
-
-function Shell({ children }: { children: React.ReactNode }) {
-  function signOut() {
-    tokenStore.clear();
-    // A hard navigation, not a router push: it drops the TanStack Query cache,
-    // which still holds this company's employee data.
-    window.location.href = '/login';
-  }
-
-  return (
-    <div className="min-h-screen bg-muted/30">
-      <header className="border-b bg-background">
-        <div className="mx-auto flex h-14 max-w-6xl items-center gap-6 px-4">
-          <span className="font-semibold tracking-tight">PeoplePulse</span>
-
-          <nav className="flex items-center gap-1">
-            <Can I="employee.view">
-              <NavItem to="/employees" icon={Users}>People</NavItem>
-            </Can>
-            <Can I="attendance.punch">
-              <NavItem to="/attendance" icon={Clock}>Attendance</NavItem>
-            </Can>
-            <Can I="leave.apply">
-              <NavItem to="/leave" icon={CalendarDays} end>Leave</NavItem>
-            </Can>
-            <Can I="leave.approve">
-              <NavItem to="/leave/approvals" icon={CalendarCheck}>Approvals</NavItem>
-            </Can>
-            <Can I="employee.import">
-              <NavItem to="/import" icon={Upload}>Import</NavItem>
-            </Can>
-            <Can I="tenant.settings">
-              <NavItem to="/settings" icon={Building2}>Company</NavItem>
-            </Can>
-            <Can I="user.invite">
-              <NavItem to="/users" icon={UserCog}>Users</NavItem>
-            </Can>
-          </nav>
-
-          <div className="ml-auto flex items-center gap-4">
-            <CompanySwitcher />
-            <NavLink
-              to="/security"
-              className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"
-            >
-              <ShieldCheck className="h-4 w-4" />
-              Security
-            </NavLink>
-            <button
-              type="button"
-              onClick={signOut}
-              className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"
-            >
-              <LogOut className="h-4 w-4" />
-              Sign out
-            </button>
-          </div>
-        </div>
-      </header>
-
-      <MfaSetupNudge />
-
-      <main className="mx-auto max-w-6xl p-4 py-8">{children}</main>
-    </div>
-  );
-}
-
-/**
- * For someone whose access needs a second factor and who has none yet. Not a
- * wall — the API refuses only the gated actions, and those offer setup in place
- * — but a reminder to do it now, at a desk, rather than mid-payroll.
- */
-function MfaSetupNudge() {
-  const { session } = usePermissions();
-  const { pathname } = useLocation();
-  if (!session?.mfaRequired || session.mfaEnrolled || pathname === '/security') return null;
-
-  return (
-    <div className="border-b bg-muted">
-      <div className="mx-auto flex max-w-6xl items-center gap-2 px-4 py-2 text-sm">
-        <ShieldCheck className="h-4 w-4 shrink-0" />
-        <span>Some of what you can do here needs two-factor authentication.</span>
-        <Link to="/security" className="font-medium text-primary hover:underline">Set it up</Link>
-      </div>
-    </div>
-  );
-}
-
-function NavItem({
-  to,
-  icon: Icon,
-  end,
-  children,
-}: {
-  to: string;
-  icon: typeof Users;
-  /** Active only on this exact path — so Leave is not lit up while you are on Approvals. */
-  end?: boolean;
-  children: React.ReactNode;
-}) {
-  return (
-    <NavLink
-      to={to}
-      end={end ?? false}
-      className={({ isActive }) =>
-        cn(
-          'inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm transition-colors',
-          isActive
-            ? 'bg-muted font-medium text-foreground'
-            : 'text-muted-foreground hover:text-foreground',
-        )
-      }
-    >
-      <Icon className="h-4 w-4" />
-      {children}
-    </NavLink>
   );
 }
 
 function Booting() {
   return (
-    <div className="flex min-h-screen items-center justify-center">
-      <p className="text-sm text-muted-foreground">Loading…</p>
+    <div className="flex min-h-screen flex-col items-center justify-center gap-3">
+      <LogoMark className="h-10 w-10 animate-shimmer" />
+      <p className="sr-only">Loading…</p>
     </div>
   );
 }
@@ -236,6 +109,7 @@ function SessionFailed() {
   return (
     <div className="flex min-h-screen items-center justify-center p-4">
       <div className="max-w-sm text-center">
+        <LogoMark className="mx-auto mb-4 h-10 w-10" />
         <p className="font-medium">We couldn&apos;t reach PeoplePulse.</p>
         <p className="mt-1 text-sm text-muted-foreground">
           Your session is still valid. Check your connection and try again.
@@ -243,7 +117,7 @@ function SessionFailed() {
         <button
           type="button"
           onClick={() => window.location.reload()}
-          className="mt-4 text-sm text-primary hover:underline"
+          className={buttonVariants({ variant: 'outline', className: 'mt-4' })}
         >
           Retry
         </button>
@@ -254,11 +128,12 @@ function SessionFailed() {
 
 function NotFound() {
   return (
-    <div className="py-16 text-center">
-      <p className="font-medium">That page doesn&apos;t exist.</p>
-      <NavLink to="/employees" className="mt-2 inline-block text-sm text-primary hover:underline">
-        Back to People
-      </NavLink>
+    <div className="py-20 text-center">
+      <p className="text-5xl font-semibold tracking-tight text-muted-foreground/40">404</p>
+      <p className="mt-3 font-medium">That page doesn&apos;t exist.</p>
+      <Link to="/home" className={buttonVariants({ variant: 'outline', className: 'mt-4' })}>
+        Back to home
+      </Link>
     </div>
   );
 }

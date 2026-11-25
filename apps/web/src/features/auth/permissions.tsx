@@ -30,6 +30,10 @@ export interface Session {
   userId: string;
   tenantId: string;
   employeeId: string | null;
+  /** The login's address — global, the same in every company. */
+  email: string;
+  /** The linked employee's name in this company; null when there is no employee record here. */
+  name: string | null;
   /** This token carries a verified second factor. */
   mfaVerified: boolean;
   /** Something this user may do here needs one — so ask before it, or offer setup. */

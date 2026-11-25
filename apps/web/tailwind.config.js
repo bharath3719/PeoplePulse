@@ -20,11 +20,17 @@ export default {
         border: 'hsl(var(--border))',
         input: 'hsl(var(--input))',
         ring: 'hsl(var(--ring))',
+        canvas: 'hsl(var(--canvas))',
         background: 'hsl(var(--background))',
         foreground: 'hsl(var(--foreground))',
         primary: {
           DEFAULT: 'hsl(var(--primary))',
           foreground: 'hsl(var(--primary-foreground))',
+        },
+        /** The selected nav item, a highlighted row: brand, but quiet. */
+        brand: {
+          soft: 'hsl(var(--brand-soft))',
+          'soft-foreground': 'hsl(var(--brand-soft-foreground))',
         },
         secondary: {
           DEFAULT: 'hsl(var(--secondary))',
@@ -46,6 +52,15 @@ export default {
           DEFAULT: 'hsl(var(--card))',
           foreground: 'hsl(var(--card-foreground))',
         },
+        popover: {
+          DEFAULT: 'hsl(var(--popover))',
+          foreground: 'hsl(var(--popover-foreground))',
+        },
+
+        /** Generic outcomes — a toast, a stat that moved, a checklist step done. */
+        success: 'hsl(var(--success))',
+        warning: 'hsl(var(--warning))',
+        info: 'hsl(var(--info))',
 
         /**
          * Semantic colours for the statuses this product actually has.
@@ -66,17 +81,60 @@ export default {
           approved: 'hsl(var(--leave-approved))',
           pending: 'hsl(var(--leave-pending))',
         },
+
+        avatar: {
+          1: 'hsl(var(--avatar-1))',
+          2: 'hsl(var(--avatar-2))',
+          3: 'hsl(var(--avatar-3))',
+          4: 'hsl(var(--avatar-4))',
+          5: 'hsl(var(--avatar-5))',
+          6: 'hsl(var(--avatar-6))',
+        },
       },
       borderRadius: {
+        xl: 'calc(var(--radius) + 4px)',
         lg: 'var(--radius)',
         md: 'calc(var(--radius) - 2px)',
         sm: 'calc(var(--radius) - 4px)',
       },
+      boxShadow: {
+        /** A card on the panel: a hairline of depth, not a float. */
+        card: '0 1px 2px 0 rgb(16 24 40 / 0.04), 0 1px 3px 0 rgb(16 24 40 / 0.04)',
+        /** The page panel on the canvas. */
+        panel: '0 1px 3px 0 rgb(16 24 40 / 0.06), 0 0 0 1px rgb(16 24 40 / 0.03)',
+        popover: '0 10px 32px -4px rgb(16 24 40 / 0.14), 0 4px 10px -2px rgb(16 24 40 / 0.06)',
+      },
       fontFamily: {
-        sans: ['Inter', 'system-ui', '-apple-system', 'Segoe UI', 'sans-serif'],
+        sans: ['"Inter Variable"', 'Inter', 'system-ui', '-apple-system', 'Segoe UI', 'sans-serif'],
         // Tabular figures for money and employee codes. A salary register with
         // proportional digits is unreadable — the columns will not line up.
-        mono: ['ui-monospace', 'SFMono-Regular', 'Menlo', 'monospace'],
+        mono: ['ui-monospace', 'SFMono-Regular', 'Cascadia Mono', 'Menlo', 'monospace'],
+      },
+      keyframes: {
+        'fade-in': { from: { opacity: '0' }, to: { opacity: '1' } },
+        'zoom-in': {
+          from: { opacity: '0', transform: 'translate(-50%, -48%) scale(0.97)' },
+          to: { opacity: '1', transform: 'translate(-50%, -50%) scale(1)' },
+        },
+        'slide-in-left': { from: { transform: 'translateX(-100%)' }, to: { transform: 'translateX(0)' } },
+        'pop-in': {
+          from: { opacity: '0', transform: 'scale(0.96) translateY(-2px)' },
+          to: { opacity: '1', transform: 'scale(1) translateY(0)' },
+        },
+        shimmer: { '0%, 100%': { opacity: '1' }, '50%': { opacity: '0.5' } },
+        /** Horizontally centred, near the top: the command menu. Keeps its translateX. */
+        'drop-in': {
+          from: { opacity: '0', transform: 'translate(-50%, -6px) scale(0.98)' },
+          to: { opacity: '1', transform: 'translate(-50%, 0) scale(1)' },
+        },
+      },
+      animation: {
+        'fade-in': 'fade-in 150ms ease-out',
+        'zoom-in': 'zoom-in 160ms cubic-bezier(0.16, 1, 0.3, 1)',
+        'slide-in-left': 'slide-in-left 220ms cubic-bezier(0.16, 1, 0.3, 1)',
+        'pop-in': 'pop-in 120ms cubic-bezier(0.16, 1, 0.3, 1)',
+        shimmer: 'shimmer 1.6s ease-in-out infinite',
+        'drop-in': 'drop-in 140ms cubic-bezier(0.16, 1, 0.3, 1)',
       },
     },
   },

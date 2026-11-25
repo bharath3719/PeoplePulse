@@ -7,35 +7,50 @@
  *
  * Defined as HSL channels (not full colours) so Tailwind can apply opacity
  * modifiers — `bg-primary/10` works, which it would not if these were hex.
+ *
+ * The layout is an inset panel: the sidebar sits on the `canvas`, and the page
+ * is a raised `background` panel beside it. Cards sit on the panel.
  */
 @layer base {
   :root {
+    --canvas: 225 20% 96%;
     --background: 0 0% 100%;
-    --foreground: 222 47% 11%;
+    --foreground: 226 32% 12%;
 
     --card: 0 0% 100%;
-    --card-foreground: 222 47% 11%;
+    --card-foreground: 226 32% 12%;
 
-    --primary: 222 47% 31%;
-    --primary-foreground: 210 40% 98%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 226 32% 12%;
 
-    --secondary: 210 40% 96%;
-    --secondary-foreground: 222 47% 11%;
+    /* Brand: indigo. Payroll software has to look like it can be trusted with
+       money first, and like it was designed second. */
+    --primary: 243 75% 59%;
+    --primary-foreground: 0 0% 100%;
+    --brand-soft: 243 90% 96%;
+    --brand-soft-foreground: 243 60% 42%;
 
-    --muted: 210 40% 96%;
-    --muted-foreground: 215 16% 47%;
+    --secondary: 225 16% 95%;
+    --secondary-foreground: 226 32% 12%;
 
-    --accent: 210 40% 96%;
-    --accent-foreground: 222 47% 11%;
+    --muted: 225 16% 96%;
+    --muted-foreground: 223 10% 44%;
+
+    --accent: 225 16% 94%;
+    --accent-foreground: 226 32% 12%;
 
     --destructive: 0 72% 51%;
-    --destructive-foreground: 210 40% 98%;
+    --destructive-foreground: 0 0% 100%;
 
-    --border: 214 32% 91%;
-    --input: 214 32% 91%;
-    --ring: 222 47% 31%;
+    --success: 152 62% 34%;
+    --warning: 32 92% 42%;
+    --info: 208 88% 46%;
 
-    --radius: 0.5rem;
+    --border: 225 14% 90%;
+    --input: 225 14% 86%;
+    --ring: 243 75% 59%;
+
+    --radius: 0.625rem;
 
     /* PF status. Three distinct facts, three distinct colours — see the
        comment in tailwind.config.js. */
@@ -46,35 +61,73 @@
     /* Leave request states. Rejected uses --destructive, cancelled --muted. */
     --leave-approved: 142 71% 29%;
     --leave-pending: 32 90% 40%;
+
+    /* Avatars: six hues, picked by a hash of the name so a person keeps theirs. */
+    --avatar-1: 243 75% 59%;
+    --avatar-2: 173 70% 32%;
+    --avatar-3: 330 65% 50%;
+    --avatar-4: 28 85% 48%;
+    --avatar-5: 205 85% 45%;
+    --avatar-6: 268 60% 55%;
   }
 
   .dark {
-    --background: 222 47% 11%;
-    --foreground: 210 40% 98%;
-    --card: 222 47% 13%;
-    --card-foreground: 210 40% 98%;
-    --primary: 210 40% 98%;
-    --primary-foreground: 222 47% 11%;
-    --secondary: 217 33% 18%;
-    --secondary-foreground: 210 40% 98%;
-    --muted: 217 33% 18%;
-    --muted-foreground: 215 20% 65%;
-    --accent: 217 33% 18%;
-    --accent-foreground: 210 40% 98%;
-    --destructive: 0 63% 31%;
-    --destructive-foreground: 210 40% 98%;
-    --border: 217 33% 20%;
-    --input: 217 33% 20%;
-    --ring: 213 27% 84%;
+    --canvas: 228 18% 6%;
+    --background: 228 16% 9%;
+    --foreground: 220 20% 94%;
+    --card: 228 15% 11%;
+    --card-foreground: 220 20% 94%;
+    --popover: 228 15% 12%;
+    --popover-foreground: 220 20% 94%;
+    --primary: 243 85% 68%;
+    --primary-foreground: 0 0% 100%;
+    --brand-soft: 243 40% 20%;
+    --brand-soft-foreground: 243 90% 82%;
+    --secondary: 228 13% 16%;
+    --secondary-foreground: 220 20% 94%;
+    --muted: 228 13% 15%;
+    --muted-foreground: 222 12% 62%;
+    --accent: 228 13% 17%;
+    --accent-foreground: 220 20% 94%;
+    --destructive: 0 70% 58%;
+    --destructive-foreground: 0 0% 100%;
+    --success: 152 55% 50%;
+    --warning: 36 90% 58%;
+    --info: 208 85% 62%;
+    --border: 228 12% 18%;
+    --input: 228 12% 22%;
+    --ring: 243 85% 68%;
+
+    --status-member: 142 55% 50%;
+    --status-excluded: 28 85% 60%;
+    --status-na: 220 12% 62%;
+    --leave-approved: 142 55% 50%;
+    --leave-pending: 36 90% 58%;
+
+    --avatar-1: 243 85% 68%;
+    --avatar-2: 173 60% 45%;
+    --avatar-3: 330 70% 65%;
+    --avatar-4: 28 85% 60%;
+    --avatar-5: 205 85% 60%;
+    --avatar-6: 268 70% 70%;
   }
 
   * {
     @apply border-border;
   }
 
+  html {
+    color-scheme: light;
+  }
+  html.dark {
+    color-scheme: dark;
+  }
+
   body {
-    @apply bg-background text-foreground antialiased;
-    font-feature-settings: 'rlig' 1, 'calt' 1;
+    @apply bg-canvas text-foreground antialiased;
+    /* Inter's alternates: a single-storey "a" is not the point; the
+       disambiguated 1/l/I and the open digits are, in a product full of codes. */
+    font-feature-settings: 'rlig' 1, 'calt' 1, 'cv01' 1, 'cv03' 1, 'cv04' 1, 'cv11' 1;
   }
 
   /**
@@ -85,5 +138,10 @@
   .tabular {
     font-variant-numeric: tabular-nums;
     @apply font-mono;
+  }
+
+  /** Figures in prose and stat tiles: aligned digits, but in the text face. */
+  .figures {
+    font-variant-numeric: tabular-nums;
   }
 }
