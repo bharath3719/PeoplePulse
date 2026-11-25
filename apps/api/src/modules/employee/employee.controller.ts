@@ -143,6 +143,13 @@ export class EmployeeController {
     return this.employees.revealIdentifiers(actorOrThrow(req), id);
   }
 
+  /** The profile's timeline: who changed what, and when. The audit log, for one person. */
+  @Get(':id/activity')
+  @RequirePermission('audit.view')
+  activity(@Req() req: AuthedRequest, @Param('id', ParseUUIDPipe) id: string) {
+    return this.employees.activity(actorOrThrow(req), id);
+  }
+
   /** 200 with `{ deleted: 'HARD' | 'ANONYMISED' }`: the two tiers mean different things to HR. */
   @Delete(':id')
   @RequirePermission('employee.delete')

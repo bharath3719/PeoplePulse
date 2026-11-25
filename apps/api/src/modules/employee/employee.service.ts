@@ -4,9 +4,20 @@ import {
 } from '@nestjs/common';
 import { eq, and, isNull, ilike, or, desc, sql, type SQL } from 'drizzle-orm';
 import {
-  employee, employeeEvent, tenant, location, department, designation, grade, userTenant, withTenant,
-  type Database, type TenantDatabase, type Employee, type NewEmployee,
+  employee, employeeEvent, tenant, location, department, designation, grade, userTenant, auditLog, leaveRequest,
+  withTenant, type Database, type TenantDatabase, type Employee, type NewEmployee,
 } from '@peoplepulse/db';
+
+/** One line of a person's activity timeline. */
+export interface EmployeeActivity {
+  id: string;
+  at: string;
+  entity: string;
+  action: string;
+  actorEmail: string | null;
+  before: Record<string, unknown> | null;
+  after: Record<string, unknown> | null;
+}
 import {
   derivePfStatusAtHire, deriveEsiStatusAtPeriodStart, hasPriorPfMembership, fromRupees, paise,
   resolveScope, SCOPES, type Actor, type Scope,
@@ -90,10 +101,21 @@ export class EmployeeService {
     });
   }
 
+  /**
+   * One profile, scoped like the list — plus your own. It used to check only
+   * the tenant, so any employee (every one holds `employee.view`) could open any
+   * colleague's profile by id: phone, work email, manager, PF status. Outside
+   * your scope is a 404, as it is for another company's row.
+   */
   async findOne(actor: Actor, id: string): Promise<Employee> {
+    const scope = resolveScope(actor, SCOPES.employee);
+    if (scope.kind === 'none') throw new NotFoundException('Employee not found');
+
     const found = await withTenant(this.db, actor.tenantId, async (tx) => {
-      const [row] = await tx.select().from(employee)
-        .where(and(eq(employee.id, id), isNull(employee.deletedAt)));
+      const conditions: SQL[] = [eq(employee.id, id), isNull(employee.deletedAt)];
+      const scoped = readableBy(scope);
+      if (scoped) conditions.push(scoped);
+      const [row] = await tx.select().from(employee).where(and(...conditions));
       return row;
     });
 
@@ -102,6 +124,33 @@ export class EmployeeService {
     // exists elsewhere.
     if (!found) throw new NotFoundException('Employee not found');
     return found;
+  }
+
+  /**
+   * What happened to one person's record, newest first: the audit entries about
+   * the employee, and about their leave requests. Readable only by someone who
+   * can see the person at all (findOne's 404 comes first). Entries are already
+   * redacted at write time, so no salary or PAN is in them to leak.
+   */
+  async activity(actor: Actor, id: string): Promise<EmployeeActivity[]> {
+    await this.findOne(actor, id);
+    return withTenant(this.db, actor.tenantId, async (tx) => {
+      const rows = await tx.select({
+        id: auditLog.id, at: auditLog.at, entity: auditLog.entity, action: auditLog.action,
+        actorEmail: auditLog.actorEmail, before: auditLog.before, after: auditLog.after,
+      })
+        .from(auditLog)
+        .where(or(
+          and(eq(auditLog.entity, 'employee'), eq(auditLog.entityId, id)),
+          and(
+            eq(auditLog.entity, 'leave_request'),
+            sql`${auditLog.entityId} in (select ${leaveRequest.id} from ${leaveRequest} where ${leaveRequest.employeeId} = ${id})`,
+          ),
+        ))
+        .orderBy(desc(auditLog.at))
+        .limit(100);
+      return rows.map((r) => ({ ...r, at: r.at.toISOString(), before: r.before ?? null, after: r.after ?? null }));
+    });
   }
 
   async create(actor: Actor, input: CreateEmployeeInput): Promise<Employee> {
@@ -604,6 +653,16 @@ export class EmployeeService {
 }
 
 /** Turns a resolved scope into a WHERE clause. The only place scope meets SQL. */
+/**
+ * Reading one record: the scope, and your own record too. The team scope is
+ * your reports, which leaves you out of your own People list (by design) but
+ * must not stop you opening your own profile.
+ */
+function readableBy(scope: Scope): SQL | undefined {
+  const scoped = scopeToCondition(scope);
+  return scope.kind === 'team' ? or(scoped, eq(employee.id, scope.managerEmployeeId)) : scoped;
+}
+
 function scopeToCondition(scope: Scope): SQL | undefined {
   switch (scope.kind) {
     case 'all':

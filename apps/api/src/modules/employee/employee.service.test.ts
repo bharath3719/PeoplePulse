@@ -223,6 +223,51 @@ describeIfDb('who may correct whom', () => {
   });
 });
 
+/**
+ * Opening one profile is scoped like the list. It once checked only the
+ * company, so every employee — all of whom hold `employee.view` — could read
+ * any colleague's profile by id.
+ */
+describeIfDb('who may open whose profile', () => {
+  it('shows an employee their own profile and their reports\', and no one else\'s', async () => {
+    const manager = await hire(acme, { firstName: 'Meera' });
+    const report = await hire(acme, { firstName: 'Ravi', managerId: manager.id });
+    const colleague = await hire(acme, { firstName: 'Anil' });
+    const asManager = actorIn(acme, ['employee.view'], manager.id);
+
+    expect((await service.findOne(asManager, manager.id)).id).toBe(manager.id);
+    expect((await service.findOne(asManager, report.id)).id).toBe(report.id);
+    await expect(service.findOne(asManager, colleague.id)).rejects.toThrow(NotFoundException);
+  });
+
+  it('shows nothing to a login with no employee record and no company-wide view', async () => {
+    const someone = await hire(acme);
+    await expect(service.findOne(actorIn(acme, ['employee.view']), someone.id)).rejects.toThrow(NotFoundException);
+    expect((await service.findOne(actorIn(acme, HR), someone.id)).id).toBe(someone.id);
+  });
+});
+
+describeIfDb('a profile\'s activity', () => {
+  it('lists what happened to the record, newest first, with nothing redacted leaking', async () => {
+    const someone = await hire(acme, { firstName: 'Kavya' });
+    const hr = actorIn(acme, HR);
+    await service.update(hr, someone.id, { phone: '+91 90000 00003' });
+    await service.update(hr, someone.id, { pan: 'ABCPK1234Z' });
+
+    const lines = await service.activity(hr, someone.id);
+    expect(lines.map((l) => l.action)).toEqual(['UPDATE', 'UPDATE', 'CREATE']);
+    expect(lines[1]!.after).toMatchObject({ phone: '+91 90000 00003' });
+    expect(JSON.stringify(lines)).not.toContain('ABCPK1234Z');
+  });
+
+  it('is a 404 for someone outside the reader\'s scope, as the profile is', async () => {
+    const someone = await hire(acme);
+    const elsewhere = await hire(globex);
+    await expect(service.activity(actorIn(acme, ['employee.view'], randomUUID()), someone.id)).rejects.toThrow(NotFoundException);
+    await expect(service.activity(actorIn(acme, HR), elsewhere.id)).rejects.toThrow(NotFoundException);
+  });
+});
+
 describeIfDb('every reference must belong to this company', () => {
   it('rejects a department from another company', async () => {
     const priya = await hire(acme);
