@@ -5,9 +5,10 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Can, usePermissions } from '@/features/auth/permissions';
 import { formatDate, problem } from '@/features/leave/format';
-import { AttendanceDays, Punches } from './AttendanceDays';
+import { Punches } from './AttendanceDays';
+import { AttendanceMonth } from './AttendanceMonth';
 import { usePunch, usePunchStatus } from './api/attendance';
-import { describeShift, lastDays } from './format';
+import { describeShift } from './format';
 
 /**
  * Your attendance (ATT-02): punch in and out, and the last week's punches.
@@ -20,14 +21,13 @@ export function MyAttendance() {
   const { session } = usePermissions();
   const navigate = useNavigate();
   const employeeId = session?.employeeId ?? null;
-  const [from, to] = lastDays(7);
 
   return (
     <div className="mx-auto max-w-4xl space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Attendance</h1>
-          <p className="text-sm text-muted-foreground">Punch in and out, and see your last seven days.</p>
+          <p className="text-sm text-muted-foreground">Punch in and out, and see your month.</p>
         </div>
         <Can I="attendance.manage">
           <Button variant="outline" onClick={() => navigate('/attendance/shifts')}>
@@ -45,10 +45,7 @@ export function MyAttendance() {
       ) : (
         <>
           <PunchCard />
-          <section className="space-y-2">
-            <h2 className="text-sm font-medium text-muted-foreground">Last seven days</h2>
-            <AttendanceDays employeeId={employeeId} from={from} to={to} />
-          </section>
+          <AttendanceMonth employeeId={employeeId} />
         </>
       )}
     </div>

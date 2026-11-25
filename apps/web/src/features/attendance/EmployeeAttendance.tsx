@@ -9,9 +9,9 @@ import { Select } from '@/components/ui/select';
 import { Field } from '@/components/ui/field';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { WEEKDAYS, formatDate, problem } from '@/features/leave/format';
-import { AttendanceDays } from './AttendanceDays';
+import { AttendanceMonth } from './AttendanceMonth';
 import { useAssignRoster, useRemoveRosterEntry, useRoster, useShifts, type Roster } from './api/attendance';
-import { describeShift, describeWeeklyOffs, lastDays } from './format';
+import { describeShift, describeWeeklyOffs } from './format';
 
 /**
  * An employee's attendance, on their profile: the roster they work to (ATT-04)
@@ -21,7 +21,6 @@ import { describeShift, describeWeeklyOffs, lastDays } from './format';
 export function EmployeeAttendance({ employeeId }: { employeeId: string }) {
   const roster = useRoster(employeeId);
   const [assigning, setAssigning] = useState(false);
-  const [from, to] = lastDays(7);
 
   if (roster.error) {
     return (
@@ -57,10 +56,7 @@ export function EmployeeAttendance({ employeeId }: { employeeId: string }) {
             {roster.data.entries.length > 0 && <RosterEntries roster={roster.data} />}
           </>
         )}
-        <section className="space-y-2">
-          <h3 className="text-sm font-medium text-muted-foreground">Last seven days</h3>
-          <AttendanceDays employeeId={employeeId} from={from} to={to} />
-        </section>
+        <AttendanceMonth employeeId={employeeId} />
       </CardContent>
     </Card>
   );
